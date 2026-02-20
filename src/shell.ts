@@ -54,7 +54,10 @@ export class AppShell extends LiteElement {
   @property({ type: Number }) accessor downloadEtaSeconds: number = 0
   @property({ type: String }) accessor downloadHash: string = ''
   @property({ type: Boolean }) accessor downloadReady: boolean = false
-  @property({ type: Object }) accessor downloadConfirmPending: { hash: string; name?: string } | null = null
+  @property({ type: Object }) accessor downloadConfirmPending: {
+    hash: string
+    name?: string
+  } | null = null
   static readonly chunkSizeBytes = 4 * 1024 * 1024
   static readonly chunkThresholdBytes = 64 * 1024 * 1024
   static readonly maxInMemoryBytes = 1024 * 1024 * 1024
@@ -1076,23 +1079,30 @@ export class AppShell extends LiteElement {
       // todo should only be shareable to other peers we want to share with
       peernet.addStore('share', 'peernet', false)
 
+      const dismissLoading = () => {
+        if (!loadingScreen?.shown) return
+        updateStatus('connected')
+        setTimeout(() => {
+          loadingScreen.shown = false
+        }, 500)
+      }
+
+      let peerFallbackTimer: ReturnType<typeof setTimeout> | undefined
+
       updateStatus('connecting-stars')
       pubsub.subscribe('star:connected', () => {
-        if (loadingScreen.shown) updateStatus('connecting-peers')
+        if (loadingScreen?.shown) {
+          updateStatus('connecting-peers')
+          // fallback: dismiss after 8 s even if no peer connects
+          clearTimeout(peerFallbackTimer)
+          peerFallbackTimer = setTimeout(dismissLoading, 8_000)
+        }
         this.addLog('Connecting to star...')
       })
 
       pubsub.subscribe('peer:connected', (peer: any) => {
-        console.log(peer)
-        if (loadingScreen.shown) {
-          updateStatus('connected')
-
-          if (loadingScreen) {
-            setTimeout(() => {
-              loadingScreen.shown = false
-            }, 500)
-          }
-        }
+        clearTimeout(peerFallbackTimer)
+        dismissLoading()
         if (peer !== peernet.peerId) this.addLog(`Peer connected: ${peer}`)
         if (
           this.#pendingDownload &&
@@ -1112,6 +1122,11 @@ export class AppShell extends LiteElement {
 
       await peernet.start()
       this.peerId = peernet.peerId
+      // if peer:connected already fired before subscription or star never came, dismiss after a short grace period
+      if (loadingScreen?.shown) {
+        peerFallbackTimer =
+          peerFallbackTimer ?? setTimeout(dismissLoading, 12_000)
+      }
 
       this.addLog(`Peernet started. Your ID: ${peernet.peerId}`)
     } catch (err) {
@@ -2074,19 +2089,28 @@ export class AppShell extends LiteElement {
                       </div>
                     `
                   : ''}
-                ${this.downloadConfirmPending && !this.isDownloading && !this.downloadReady
+                ${this.downloadConfirmPending &&
+                !this.isDownloading &&
+                !this.downloadReady
                   ? html`
                       <div class="processing-banner" style="cursor:default">
                         <span class="processing-icon">
                           <custom-icon icon="download"></custom-icon>
                         </span>
                         <div class="processing-meta">
-                          <div class="processing-title">Fetching from network…</div>
+                          <div class="processing-title">
+                            Fetching from network…
+                          </div>
                           <div class="processing-name">
                             ${this.downloadConfirmPending.name
                               ? this.downloadConfirmPending.name
                               : html`Hash
-                                <code>${this.downloadConfirmPending.hash.slice(0, 16)}…</code>`}
+                                  <code
+                                    >${this.downloadConfirmPending.hash.slice(
+                                      0,
+                                      16
+                                    )}…</code
+                                  >`}
                             &bull; Please be patient
                           </div>
                         </div>
@@ -2101,13 +2125,17 @@ export class AppShell extends LiteElement {
                         </span>
                         <div class="processing-meta">
                           <div class="processing-title">Ready to save</div>
-                          <div class="processing-name">${this.#readyFilename || ''}</div>
+                          <div class="processing-name">
+                            ${this.#readyFilename || ''}
+                          </div>
                         </div>
                         <button
                           class="share-btn"
                           style="margin-left:auto;white-space:nowrap"
                           @click=${this.#saveToFilesystem}
-                        >Save to disk</button>
+                        >
+                          Save to disk
+                        </button>
                       </div>
                     `
                   : ''}
@@ -2132,30 +2160,32 @@ export class AppShell extends LiteElement {
                           <div class="processing-name">
                             ${this.downloadStage === 'Preparing'
                               ? html`Downloading hash
-                                  <code>${this.downloadHash.slice(0, 16)}…</code>
+                                  <code
+                                    >${this.downloadHash.slice(0, 16)}…</code
+                                  >
                                   &bull; Please be patient`
                               : html`${this.downloadName || ''}
-                                  ${this.downloadStage
-                                    ? html` • ${this.downloadStage}`
-                                    : ''}
-                                  ${this.downloadChunkTotal
-                                    ? html` • Chunks
-                                      ${this.downloadChunkDone}/${this
-                                        .downloadChunkTotal}`
-                                    : ''}
-                                  ${this.downloadRateBytes
-                                    ? html` •
-                                      ${this.formatFileSize(
-                                        this.downloadRateBytes
-                                      )}/s`
-                                    : ''}
-                                  ${this.downloadEtaSeconds &&
-                                  this.downloadBytesTotal
-                                    ? html` • ETA
-                                      ${this.#formatDuration(
-                                        this.downloadEtaSeconds
-                                      )}`
-                                    : ''}`}
+                                ${this.downloadStage
+                                  ? html` • ${this.downloadStage}`
+                                  : ''}
+                                ${this.downloadChunkTotal
+                                  ? html` • Chunks
+                                    ${this.downloadChunkDone}/${this
+                                      .downloadChunkTotal}`
+                                  : ''}
+                                ${this.downloadRateBytes
+                                  ? html` •
+                                    ${this.formatFileSize(
+                                      this.downloadRateBytes
+                                    )}/s`
+                                  : ''}
+                                ${this.downloadEtaSeconds &&
+                                this.downloadBytesTotal
+                                  ? html` • ETA
+                                    ${this.#formatDuration(
+                                      this.downloadEtaSeconds
+                                    )}`
+                                  : ''}`}
                           </div>
                         </div>
                         <div class="processing-bar">
