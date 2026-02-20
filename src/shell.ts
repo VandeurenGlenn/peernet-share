@@ -1079,30 +1079,13 @@ export class AppShell extends LiteElement {
       // todo should only be shareable to other peers we want to share with
       peernet.addStore('share', 'peernet', false)
 
-      const dismissLoading = () => {
-        if (!loadingScreen?.shown) return
-        updateStatus('connected')
-        setTimeout(() => {
-          loadingScreen.shown = false
-        }, 500)
-      }
-
-      let peerFallbackTimer: ReturnType<typeof setTimeout> | undefined
-
       updateStatus('connecting-stars')
       pubsub.subscribe('star:connected', () => {
-        if (loadingScreen?.shown) {
-          updateStatus('connecting-peers')
-          // fallback: dismiss after 8 s even if no peer connects
-          clearTimeout(peerFallbackTimer)
-          peerFallbackTimer = setTimeout(dismissLoading, 8_000)
-        }
+        if (loadingScreen?.shown) updateStatus('connecting-peers')
         this.addLog('Connecting to star...')
       })
 
       pubsub.subscribe('peer:connected', (peer: any) => {
-        clearTimeout(peerFallbackTimer)
-        dismissLoading()
         if (peer !== peernet.peerId) this.addLog(`Peer connected: ${peer}`)
         if (
           this.#pendingDownload &&
@@ -1122,11 +1105,12 @@ export class AppShell extends LiteElement {
 
       await peernet.start()
       this.peerId = peernet.peerId
-      // if peer:connected already fired before subscription or star never came, dismiss after a short grace period
-      if (loadingScreen?.shown) {
-        peerFallbackTimer =
-          peerFallbackTimer ?? setTimeout(dismissLoading, 12_000)
-      }
+
+      // peernet is ready — dismiss loading immediately
+      updateStatus('connected')
+      setTimeout(() => {
+        if (loadingScreen) loadingScreen.shown = false
+      }, 500)
 
       this.addLog(`Peernet started. Your ID: ${peernet.peerId}`)
     } catch (err) {
