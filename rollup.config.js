@@ -5,26 +5,21 @@ import json from '@rollup/plugin-json'
 import wasm from '@rollup/plugin-wasm'
 import inject from '@rollup/plugin-inject'
 import alias from '@rollup/plugin-alias'
-import { cp, glob, open, unlink } from 'node:fs/promises'
-import { watch } from 'node:fs/promises'
+import { cp, glob, unlink } from 'node:fs/promises'
 import materialSymbols from 'rollup-plugin-material-symbols'
-;(async () => {
-  try {
-    let fd = await open('www/index.html')
-    await fd.close()
-  } catch (error) {
-    cp('src/index.html', 'www/index.html', {
-      recursive: true,
-      force: true
-    })
+
+function indexHtml() {
+  return {
+    name: 'index-html',
+    async buildStart() {
+      await cp('src/index.html', 'www/index.html', {
+        recursive: true,
+        force: true
+      })
+      this.addWatchFile('src/index.html')
+    }
   }
-  const watcher = watch('src/index.html')
-  for await (const event of watcher)
-    cp('src/index.html', 'www/index.html', {
-      recursive: true,
-      force: true
-    })
-})()
+}
 
 const files = await glob('www/**/*.js')
 
@@ -74,6 +69,7 @@ export default {
     inject({
       process: 'process'
     }),
-    materialSymbols({ placeholderPrefix: 'symbol' })
+    materialSymbols({ placeholderPrefix: 'symbol' }),
+    indexHtml()
   ]
 }
