@@ -1207,6 +1207,7 @@ export class AppShell extends LiteElement {
         )
       )
       const encoded = await Promise.race([peernet.get(hash, 'share'), _timeout])
+      await globalThis.shareStore.put(hash, encoded)
       if (!encoded) {
         this.addLog(`Could not find file for download hash: ${hash}`)
         return
