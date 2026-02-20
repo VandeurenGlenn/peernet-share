@@ -6,6 +6,7 @@ import { getOrCreatePassword } from './password.js'
 import './elements/info-header.js'
 
 import icons from './icons.js'
+import PeernetFile from '@leofcoin/peernet/file'
 globalThis.peernet = globalThis.peernet || null
 
 declare global {
@@ -42,9 +43,28 @@ export class AppShell extends LiteElement {
   @property({ type: Object }) accessor uploadProgress: Record<string, number> =
     {}
   @property({ type: Boolean }) accessor logExpanded: boolean = false
+  @property({ type: Boolean }) accessor isDownloading: boolean = false
+  @property({ type: Number }) accessor downloadBytesTotal: number = 0
+  @property({ type: Number }) accessor downloadBytesDone: number = 0
+  @property({ type: String }) accessor downloadName: string = ''
+  @property({ type: String }) accessor downloadStage: string = ''
+  @property({ type: Number }) accessor downloadChunkTotal: number = 0
+  @property({ type: Number }) accessor downloadChunkDone: number = 0
+  @property({ type: Number }) accessor downloadRateBytes: number = 0
+  @property({ type: Number }) accessor downloadEtaSeconds: number = 0
+  @property({ type: String }) accessor downloadHash: string = ''
+  @property({ type: Boolean }) accessor downloadReady: boolean = false
+  @property({ type: Object }) accessor downloadConfirmPending: { hash: string; name?: string } | null = null
+  static readonly chunkSizeBytes = 4 * 1024 * 1024
+  static readonly chunkThresholdBytes = 64 * 1024 * 1024
+  static readonly maxInMemoryBytes = 1024 * 1024 * 1024
   #dragCounter = 0
   #fileInput?: HTMLInputElement
   #folderInput?: HTMLInputElement
+  #pendingDownload?: { hash: string; name?: string }
+  #isSearching = false
+  #readyBlob?: Blob
+  #readyFilename?: string
   static styles = [
     css`
       :host {
@@ -968,53 +988,69 @@ export class AppShell extends LiteElement {
     `
   ]
   async firstRender(): Promise<void> {
-        // Check for share/download hash in URL
-        const urlParams = new URLSearchParams(window.location.search);
-        const shareHash = urlParams.get('share');
-        const downloadHash = urlParams.get('download');
-        if (shareHash || downloadHash) {
-          // Fetch shared files/folders from Peernet store
-          let hashesToFetch = [];
-          if (shareHash) {
-            // Fetch all files for the share hash
-            // (Assume shareHash maps to a list of file hashes in your store)
-            try {
-              const fileList = await globalThis.shareStore.get(shareHash);
-              if (fileList && Array.isArray(fileList)) {
-                hashesToFetch = fileList;
-              }
-            } catch (e) {
-              this.addLog('Could not fetch shared files for hash: ' + shareHash);
-            }
-          } else if (downloadHash) {
-            hashesToFetch = [downloadHash];
+    // Check for share/download hash in URL
+    const urlParams = new URLSearchParams(window.location.search)
+    const shareHash = urlParams.get('share')
+    const downloadHash = urlParams.get('download')
+    const downloadName = urlParams.get('name') || undefined
+    if (downloadHash) {
+      this.#pendingDownload = { hash: downloadHash, name: downloadName }
+      this.downloadConfirmPending = { hash: downloadHash, name: downloadName }
+    }
+    if (shareHash || downloadHash) {
+      // Fetch shared files/folders from Peernet store
+      let hashesToFetch = []
+      if (shareHash) {
+        // Fetch all files for the share hash
+        // (Assume shareHash maps to a list of file hashes in your store)
+        try {
+          const fileList =
+            (await globalThis.shareStore.get(shareHash)) ??
+            (await peernet?.requestData?.(shareHash, 'share'))
+          if (fileList && Array.isArray(fileList)) {
+            hashesToFetch = fileList
           }
-          // Fetch file metadata for each hash
-          const fetchedFiles = [];
-          for (const hash of hashesToFetch) {
-            try {
-              const encoded = await globalThis.shareStore.get(hash);
-              if (encoded) {
-                // Decode file metadata (assume peernet-file proto)
-                const fileProto = new peernet.protos['peernet-file']();
-                await fileProto.decode(encoded);
-                fetchedFiles.push({
-                  name: fileProto.path,
-                  hash,
-                  peerId: this.peerId,
-                  type: 'file',
-                  size: fileProto.content?.length || 0
-                });
-              }
-            } catch (e) {
-              this.addLog('Could not fetch file for hash: ' + hash);
-            }
-          }
-          if (fetchedFiles.length) {
-            this.sharedFiles = fetchedFiles;
-            this.addLog('Fetched shared files for download link.');
-          }
+        } catch (e) {
+          this.addLog('Could not fetch shared files for hash: ' + shareHash)
         }
+      } else if (downloadHash) {
+        hashesToFetch = [downloadHash]
+      }
+      // Fetch file metadata for each hash
+      const fetchedFiles = []
+      for (const hash of hashesToFetch) {
+        try {
+          const encoded =
+            (await globalThis.shareStore.get(hash)) ??
+            (await peernet?.requestData?.(hash, 'share'))
+          if (encoded) {
+            // Decode file metadata (assume peernet-file proto)
+            const fileProto = new peernet.protos['peernet-file']()
+            await fileProto.decode(encoded)
+            const linkSizes = Array.isArray(fileProto.links)
+              ? fileProto.links.reduce(
+                  (sum: number, link: { size?: number }) =>
+                    sum + (link?.size ?? 0),
+                  0
+                )
+              : 0
+            fetchedFiles.push({
+              name: fileProto.path,
+              hash,
+              peerId: this.peerId,
+              type: 'file',
+              size: fileProto.content?.length || linkSizes || 0
+            })
+          }
+        } catch (e) {
+          this.addLog('Could not fetch file for hash: ' + hash)
+        }
+      }
+      if (fetchedFiles.length) {
+        this.sharedFiles = fetchedFiles
+        this.addLog('Fetched shared files for download link.')
+      }
+    }
     this.#attachGlobalDropHandlers()
     try {
       this.showHint = localStorage.getItem('peernet-hide-hint') !== '1'
@@ -1058,6 +1094,20 @@ export class AppShell extends LiteElement {
           }
         }
         if (peer !== peernet.peerId) this.addLog(`Peer connected: ${peer}`)
+        if (
+          this.#pendingDownload &&
+          !this.#isSearching &&
+          !this.isDownloading &&
+          !this.downloadReady
+        ) {
+          this.#isSearching = true
+          this.#downloadSharedFile(
+            this.#pendingDownload.hash,
+            this.#pendingDownload.name
+          ).finally(() => {
+            this.#isSearching = false
+          })
+        }
       })
 
       await peernet.start()
@@ -1068,6 +1118,202 @@ export class AppShell extends LiteElement {
       this.addLog(`Failed to initialize Peernet: ${err}`)
       console.error(err)
     }
+  }
+
+  async #getFromShareStore(hash: string): Promise<any> {
+    try {
+      let data = await globalThis.shareStore.get(hash)
+      if (!data) {
+        try {
+          this.addLog(`Fetching ${hash.slice(0, 12)}… from network`)
+          data = await peernet.requestData(hash, 'share')
+        } catch {
+          // network fetch failed
+        }
+      }
+      return data
+    } catch (error) {
+      try {
+        this.addLog(`Fetching ${hash.slice(0, 12)}… from network`)
+        return await peernet.requestData(hash, 'share')
+      } catch {
+        return null
+      }
+    }
+  }
+
+  getFromShareStore(hash: string): Promise<any> {
+    return this.#getFromShareStore(hash)
+  }
+
+  #saveToFilesystem = () => {
+    if (!this.#readyBlob || !this.#readyFilename) return
+    const url = URL.createObjectURL(this.#readyBlob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = this.#readyFilename
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    this.addLog(`Saved: ${this.#readyFilename}`)
+    this.#readyBlob = undefined
+    this.#readyFilename = undefined
+    this.downloadReady = false
+    this.downloadConfirmPending = null
+    this.#pendingDownload = undefined
+  }
+  async #downloadSharedFile(hash: string, name?: string) {
+    let downloadStartedAt = 0
+    const resetDownload = () => {
+      this.isDownloading = false
+      this.downloadBytesDone = 0
+      this.downloadBytesTotal = 0
+      this.downloadName = ''
+      this.downloadStage = ''
+      this.downloadHash = ''
+      this.downloadChunkTotal = 0
+      this.downloadChunkDone = 0
+      this.downloadRateBytes = 0
+      this.downloadEtaSeconds = 0
+      downloadStartedAt = 0
+      this.#readyBlob = undefined
+      this.#readyFilename = undefined
+      this.downloadReady = false
+    }
+
+    try {
+      await globalThis.shareStore.get(hash)
+    } catch (error) {
+      console.error(error)
+
+      if (error.message.includes('not found')) {
+        this.addLog(`File not found for download hash: ${hash}`)
+      } else {
+        this.addLog(`Error accessing share store for hash ${hash}: ${error}`)
+        console.error(error)
+      }
+    }
+    try {
+      const _timeout = new Promise<never>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                'Download timed out: peer did not respond within 30 seconds'
+              )
+            ),
+          30_000
+        )
+      )
+      const encoded = await Promise.race([peernet.get(hash, 'share'), _timeout])
+      if (!encoded) {
+        this.addLog(`Could not find file for download hash: ${hash}`)
+        return
+      }
+
+      if (this.#pendingDownload?.hash === hash)
+        this.#pendingDownload = undefined
+
+      const fileProto = new peernet.protos['peernet-file'](
+        encoded
+      ) as PeernetFile
+      console.log(fileProto)
+
+      const { path, content, links } = fileProto.decoded as {
+        path?: string
+        content?: Uint8Array
+        links?: { hash: string; size?: number; path?: string }[]
+      }
+      let filename = name || path || 'download'
+      this.isDownloading = true
+      this.downloadName = filename
+      this.downloadHash = hash
+      this.downloadStage = 'Preparing'
+      downloadStartedAt = performance.now()
+      const parts: Uint8Array[] = []
+
+      if (Array.isArray(links) && links.length) {
+        const ordered = [...links].sort((a: any, b: any) =>
+          String(a.path || '').localeCompare(String(b.path || ''))
+        )
+        this.downloadBytesTotal = ordered.reduce(
+          (sum, link) => sum + (link.size ?? 0),
+          0
+        )
+        this.downloadChunkTotal = ordered.length
+        this.downloadChunkDone = 0
+        this.downloadStage = 'Downloading'
+
+        for (const link of ordered) {
+          const chunkEncoded = await this.#getFromShareStore(link.hash)
+          if (!chunkEncoded) {
+            this.addLog(`Missing chunk for ${filename}: ${link.hash}`)
+            return
+          }
+          const chunkProto = new peernet.protos['peernet-file']()
+          await chunkProto.decode(chunkEncoded)
+          if (!chunkProto.content) {
+            this.addLog(`Invalid chunk content for ${filename}`)
+            return
+          }
+          parts.push(chunkProto.content)
+          this.downloadBytesDone = Math.min(
+            this.downloadBytesTotal,
+            this.downloadBytesDone + chunkProto.content.length
+          )
+          this.downloadChunkDone += 1
+          const elapsedSeconds = Math.max(
+            0.5,
+            (performance.now() - downloadStartedAt) / 1000
+          )
+          this.downloadRateBytes = this.downloadBytesDone / elapsedSeconds
+          this.downloadEtaSeconds = this.downloadRateBytes
+            ? Math.max(
+                0,
+                (this.downloadBytesTotal - this.downloadBytesDone) /
+                  this.downloadRateBytes
+              )
+            : 0
+          this.requestRender()
+          await new Promise((resolve) => requestAnimationFrame(() => resolve()))
+        }
+      } else if (content) {
+        parts.push(content)
+        this.downloadBytesTotal = content.length
+        this.downloadBytesDone = content.length
+        this.downloadChunkTotal = 1
+        this.downloadChunkDone = 1
+        this.downloadStage = 'Downloading'
+        this.downloadRateBytes = this.downloadBytesTotal
+        this.downloadEtaSeconds = 0
+        this.requestRender()
+      } else {
+        this.addLog(`No content available for download: ${filename}`)
+        return
+      }
+
+      this.downloadStage = 'Ready'
+      this.requestRender()
+      this.#readyBlob = new Blob(parts)
+      this.#readyFilename = filename
+      this.isDownloading = false
+      this.downloadReady = true
+      this.addLog(`File ready to save: ${filename}`)
+    } catch (error) {
+      this.addLog(`Failed to download shared file: ${error}`)
+      console.error(error)
+      resetDownload()
+    }
+  }
+
+  #formatDuration(seconds: number): string {
+    if (!Number.isFinite(seconds) || seconds <= 0) return '0:00'
+    const total = Math.round(seconds)
+    const mins = Math.floor(total / 60)
+    const secs = total % 60
+    return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
   disconnectedCallback(): void {
@@ -1353,48 +1599,136 @@ export class AppShell extends LiteElement {
     }
   }
 
-  async #readFileBytesWithProgress(): Promise<Uint8Array> {
-    const file = this.files[0]
-    const item = this.processingItems[0]
-    if (file.stream) {
-      if (file.size > 2147483647) {
-        throw new RangeError('File too large to process in browser (max 2GB).')
-      }
-      const reader = file.stream().getReader()
-      const chunks = []
-      let received = 0
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (value) {
-          chunks.push(value)
-          received += value.length
-          item.doneBytes = Math.min(item.size, item.doneBytes + value.length)
-          this.processingBytesDone = Math.min(
-            this.processingBytesTotal,
-            this.processingBytesDone + value.length
-          )
-          this.requestRender()
-          await new Promise((resolve) => requestAnimationFrame(() => resolve()))
-        }
-      }
-      const output = new Uint8Array(received)
-      let offset = 0
-      for (const chunk of chunks) {
-        output.set(chunk, offset)
-        offset += chunk.length
-      }
-      return output
-    }
-
-    const buffer = await file.arrayBuffer()
-    item.doneBytes = item.size
+  #updateProcessingProgress(item: any, bytes: number) {
+    item.doneBytes = Math.min(item.size, item.doneBytes + bytes)
     this.processingBytesDone = Math.min(
       this.processingBytesTotal,
-      this.processingBytesDone + buffer.byteLength
+      this.processingBytesDone + bytes
     )
     this.requestRender()
-    return new Uint8Array(buffer)
+  }
+
+  #concatUint8(a: Uint8Array, b: Uint8Array): Uint8Array {
+    const output = new Uint8Array(a.length + b.length)
+    output.set(a, 0)
+    output.set(b, a.length)
+    return output
+  }
+
+  async #readFileBytesWithProgress(file: File, item: any): Promise<Uint8Array> {
+    if (!file.stream) {
+      if (file.size > AppShell.maxInMemoryBytes) {
+        throw new RangeError('File too large to process in memory.')
+      }
+      const buffer = await file.arrayBuffer()
+      item.doneBytes = item.size
+      this.processingBytesDone = Math.min(
+        this.processingBytesTotal,
+        this.processingBytesDone + buffer.byteLength
+      )
+      this.requestRender()
+      return new Uint8Array(buffer)
+    }
+
+    if (file.size > AppShell.maxInMemoryBytes) {
+      throw new RangeError('File too large to process in memory.')
+    }
+
+    const reader = file.stream().getReader()
+    const chunks = []
+    let received = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        chunks.push(value)
+        received += value.length
+        this.#updateProcessingProgress(item, value.length)
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()))
+      }
+    }
+    const output = new Uint8Array(received)
+    let offset = 0
+    for (const chunk of chunks) {
+      output.set(chunk, offset)
+      offset += chunk.length
+    }
+    return output
+  }
+
+  async #storeChunkedFile(file: File, item: any): Promise<string> {
+    if (!file.stream) {
+      throw new RangeError('Streaming not supported for large files.')
+    }
+
+    const reader = file.stream().getReader()
+    const links: Array<{ hash: string; path: string; size: number }> = []
+    let pending = new Uint8Array(0)
+    let index = 0
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        pending = pending.length ? this.#concatUint8(pending, value) : value
+        this.#updateProcessingProgress(item, value.length)
+        while (pending.length >= AppShell.chunkSizeBytes) {
+          const chunk = pending.slice(0, AppShell.chunkSizeBytes)
+          pending = pending.slice(AppShell.chunkSizeBytes)
+
+          item.stage = 'hashing'
+          this.requestRender()
+          const chunkNode = new peernet.protos['peernet-file']({
+            path: `${file.name}.part-${index}`,
+            content: chunk
+          })
+          await chunkNode.encode()
+          const chunkHash = await chunkNode.hash()
+
+          item.stage = 'storing'
+          this.requestRender()
+          await globalThis.shareStore.put(chunkHash, chunkNode.encoded)
+
+          links.push({
+            hash: chunkHash,
+            path: `part-${index.toString().padStart(6, '0')}`,
+            size: chunk.length
+          })
+          index += 1
+        }
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()))
+      }
+    }
+
+    if (pending.length) {
+      item.stage = 'hashing'
+      this.requestRender()
+      const chunkNode = new peernet.protos['peernet-file']({
+        path: `${file.name}.part-${index}`,
+        content: pending
+      })
+      await chunkNode.encode()
+      const chunkHash = await chunkNode.hash()
+
+      item.stage = 'storing'
+      this.requestRender()
+      await globalThis.shareStore.put(chunkHash, chunkNode.encoded)
+
+      links.push({
+        hash: chunkHash,
+        path: `part-${index.toString().padStart(6, '0')}`,
+        size: pending.length
+      })
+    }
+
+    const node = new peernet.protos['peernet-file']({
+      path: file.name,
+      links
+    })
+    await node.encode()
+    const hash = await node.hash()
+    await globalThis.shareStore.put(hash, node.encoded)
+    return hash
   }
 
   #removeSharedItem = async (entry: {
@@ -1481,55 +1815,95 @@ export class AppShell extends LiteElement {
       }
     }
 
-    for (const [index, file] of this.files.entries()) {
-      const item = this.processingItems[index]
-      console.log('Processing file for sharing:', file.name)
-      console.log(file)
-      this.processingName = file.name
-      this.requestRender()
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => resolve())
-      )
-      try {
-        const bytes = await this.#readFileBytesWithProgress(file, item)
-        item.stage = 'hashing'
-        this.requestRender()
-        console.log(bytes)
+    const results: Array<{ hash: string; name: string } | null> = Array(
+      this.files.length
+    ).fill(null)
+    const concurrency = Math.max(
+      1,
+      Math.min(4, navigator.hardwareConcurrency ?? 2)
+    )
+    let cursor = 0
 
-        const fileProto = new peernet.protos['peernet-file']({
-          path: file.name,
-          content: bytes
-        })
-        await fileProto.encode()
-        const hash = await fileProto.hash()
+    const processNext = async () => {
+      while (true) {
+        const index = cursor
+        cursor += 1
+        if (index >= this.files.length) return
 
-        item.stage = 'storing'
-        this.requestRender()
-
-        try {
-          await globalThis.shareStore.put(hash, fileProto.encoded)
-        } catch (e) {
-          this.addLog(`Warning: Could not add ${file.name} to datastore: ${e}`)
-        }
-        hashes.push(hash)
-        newSharedFiles.push({
-          name: file.name,
-          hash,
-          peerId: this.peerId,
-          type: 'file'
-        })
-        item.stage = 'done'
-      } catch (err) {
-        this.addLog(`Failed to share file: ${file.name} (error reading file)`)
-        console.error(err)
-        if (item) item.stage = 'error'
-      } finally {
-        this.processingDone += 1
+        const file = this.files[index]
+        const item = this.processingItems[index]
+        console.log('Processing file for sharing:', file.name)
+        console.log(file)
+        this.processingName = file.name
         this.requestRender()
         await new Promise<void>((resolve) =>
           requestAnimationFrame(() => resolve())
         )
+        try {
+          const hash =
+            file.stream && file.size > AppShell.chunkThresholdBytes
+              ? await this.#storeChunkedFile(file, item)
+              : await (async () => {
+                  const bytes = await this.#readFileBytesWithProgress(
+                    file,
+                    item
+                  )
+                  item.stage = 'hashing'
+                  this.requestRender()
+
+                  const fileProto = new peernet.protos['peernet-file']({
+                    path: file.name,
+                    content: bytes
+                  })
+                  await fileProto.encode()
+                  const resolvedHash = await fileProto.hash()
+
+                  item.stage = 'storing'
+                  this.requestRender()
+
+                  try {
+                    await globalThis.shareStore.put(
+                      resolvedHash,
+                      fileProto.encoded
+                    )
+                  } catch (e) {
+                    this.addLog(
+                      `Warning: Could not add ${file.name} to datastore: ${e}`
+                    )
+                  }
+                  return resolvedHash
+                })()
+          results[index] = { hash, name: file.name }
+          item.stage = 'done'
+        } catch (err) {
+          this.addLog(`Failed to share file: ${file.name} (error reading file)`)
+          console.error(err)
+          if (item) item.stage = 'error'
+        } finally {
+          this.processingDone += 1
+          this.requestRender()
+          await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => resolve())
+          )
+        }
       }
+    }
+
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, this.files.length) }, () =>
+        processNext()
+      )
+    )
+
+    for (const result of results) {
+      if (!result) continue
+      hashes.push(result.hash)
+      newSharedFiles.push({
+        name: result.name,
+        hash: result.hash,
+        peerId: this.peerId,
+        type: 'file'
+      })
     }
 
     this.isProcessing = false
@@ -1695,6 +2069,104 @@ export class AppShell extends LiteElement {
                                       100
                                   )
                                 : 0}%"
+                          ></span>
+                        </div>
+                      </div>
+                    `
+                  : ''}
+                ${this.downloadConfirmPending && !this.isDownloading && !this.downloadReady
+                  ? html`
+                      <div class="processing-banner" style="cursor:default">
+                        <span class="processing-icon">
+                          <custom-icon icon="download"></custom-icon>
+                        </span>
+                        <div class="processing-meta">
+                          <div class="processing-title">Fetching from network…</div>
+                          <div class="processing-name">
+                            ${this.downloadConfirmPending.name
+                              ? this.downloadConfirmPending.name
+                              : html`Hash
+                                <code>${this.downloadConfirmPending.hash.slice(0, 16)}…</code>`}
+                            &bull; Please be patient
+                          </div>
+                        </div>
+                      </div>
+                    `
+                  : ''}
+                ${this.downloadReady
+                  ? html`
+                      <div class="processing-banner" style="cursor:default">
+                        <span class="processing-icon">
+                          <custom-icon icon="download"></custom-icon>
+                        </span>
+                        <div class="processing-meta">
+                          <div class="processing-title">Ready to save</div>
+                          <div class="processing-name">${this.#readyFilename || ''}</div>
+                        </div>
+                        <button
+                          class="share-btn"
+                          style="margin-left:auto;white-space:nowrap"
+                          @click=${this.#saveToFilesystem}
+                        >Save to disk</button>
+                      </div>
+                    `
+                  : ''}
+                ${this.isDownloading
+                  ? html`
+                      <div class="processing-banner">
+                        <span class="processing-icon">
+                          <custom-icon icon="download"></custom-icon>
+                        </span>
+                        <div class="processing-meta">
+                          <div class="processing-title">
+                            Downloading
+                            ${this.downloadBytesTotal
+                              ? html` •
+                                ${Math.round(
+                                  (this.downloadBytesDone /
+                                    this.downloadBytesTotal) *
+                                    100
+                                )}%`
+                              : ''}
+                          </div>
+                          <div class="processing-name">
+                            ${this.downloadStage === 'Preparing'
+                              ? html`Downloading hash
+                                  <code>${this.downloadHash.slice(0, 16)}…</code>
+                                  &bull; Please be patient`
+                              : html`${this.downloadName || ''}
+                                  ${this.downloadStage
+                                    ? html` • ${this.downloadStage}`
+                                    : ''}
+                                  ${this.downloadChunkTotal
+                                    ? html` • Chunks
+                                      ${this.downloadChunkDone}/${this
+                                        .downloadChunkTotal}`
+                                    : ''}
+                                  ${this.downloadRateBytes
+                                    ? html` •
+                                      ${this.formatFileSize(
+                                        this.downloadRateBytes
+                                      )}/s`
+                                    : ''}
+                                  ${this.downloadEtaSeconds &&
+                                  this.downloadBytesTotal
+                                    ? html` • ETA
+                                      ${this.#formatDuration(
+                                        this.downloadEtaSeconds
+                                      )}`
+                                    : ''}`}
+                          </div>
+                        </div>
+                        <div class="processing-bar">
+                          <span
+                            style="width:${this.downloadBytesTotal
+                              ? Math.round(
+                                  (this.downloadBytesDone /
+                                    this.downloadBytesTotal) *
+                                    100
+                                )
+                              : 0}%"
                           ></span>
                         </div>
                       </div>
