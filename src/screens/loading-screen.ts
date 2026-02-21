@@ -53,21 +53,7 @@ export class LoadingScreen extends LiteElement {
         text-align: center;
         z-index: 2;
       }
-      .loading-card {
-        background: rgba(15, 23, 42, 0.95);
-        box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-        border-radius: 18px;
-        padding: 2.2em 2.2em 1.8em 2.2em;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 240px;
-        width: min(560px, 90vw);
-        border: 1.5px solid rgba(255, 255, 255, 0.18);
-        backdrop-filter: blur(16px) saturate(180%);
-        -webkit-backdrop-filter: blur(16px) saturate(180%);
-      }
+
       #loadingContent h2 {
         font-size: 2em;
         margin-bottom: 0.5em;

@@ -1,15 +1,12 @@
-import { LiteElement, css, html } from "@vandeurenglenn/lite";
+import { LiteElement, css, html } from '@vandeurenglenn/lite'
 
 export class BackgroundAnimation extends LiteElement {
   static styles = [
     css`
       :host {
         display: block;
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100vw;
-        height: 100vh;
+        position: absolute;
+        inset: 0;
         z-index: 0;
         pointer-events: none;
       }
@@ -146,8 +143,8 @@ export class BackgroundAnimation extends LiteElement {
           transform: translate(-40px, 20px);
         }
       }
-    `,
-  ];
+    `
+  ]
 
   render() {
     return html`
@@ -155,6 +152,7 @@ export class BackgroundAnimation extends LiteElement {
         width="100%"
         height="100%"
         viewBox="0 0 800 600"
+        preserveAspectRatio="xMidYMid slice"
         xmlns="http://www.w3.org/2000/svg"
       >
         <defs>
@@ -200,8 +198,8 @@ export class BackgroundAnimation extends LiteElement {
           />
         </g>
       </svg>
-    `;
+    `
   }
 }
 
-customElements.define("background-animation", BackgroundAnimation);
+customElements.define('background-animation', BackgroundAnimation)

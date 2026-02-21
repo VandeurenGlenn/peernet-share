@@ -205,6 +205,43 @@ export class InfoHeader extends LiteElement {
         color: #10b981;
         text-align: right;
       }
+
+      @media (max-width: 700px) {
+        .header-inner {
+          padding: 10px 12px;
+        }
+
+        .status-bar {
+          gap: 12px;
+          overflow-x: auto;
+          scrollbar-width: none; /* Firefox */
+          -ms-overflow-style: none; /* IE/Edge */
+          padding-right: 10px;
+          mask-image: linear-gradient(to right, black 90%, transparent 100%);
+          -webkit-mask-image: linear-gradient(
+            to right,
+            black 90%,
+            transparent 100%
+          );
+        }
+
+        .status-bar::-webkit-scrollbar {
+          display: none;
+        }
+
+        .status-label {
+          display: none;
+        }
+
+        .status-item {
+          white-space: nowrap;
+        }
+
+        /* Keep labels for ID since it's important, but maybe shorten it? */
+        .status-item:first-child .status-label {
+          display: inline;
+        }
+      }
     `
   ]
 

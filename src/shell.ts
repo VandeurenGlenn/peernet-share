@@ -83,9 +83,17 @@ export class AppShell extends LiteElement {
       }
 
       .main-content {
-        flex: 1;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        top: 24px;
+        position: relative;
+        bottom: 24px;
+        position: absolute;
+        right: 0;
+        left: 0;
         overflow-y: auto;
-        padding: 1em 1em 1em 1em;
+        box-sizing: border-box;
       }
 
       .content-wrapper {
@@ -93,57 +101,64 @@ export class AppShell extends LiteElement {
         max-width: 1400px;
         width: 100%;
         box-sizing: border-box;
-      }
-
-      .section-card {
-        background: linear-gradient(
-          135deg,
-          rgba(18, 28, 48, 0.72) 0%,
-          rgba(10, 15, 28, 0.86) 45%,
-          rgba(8, 12, 22, 0.9) 100%
-        );
-        border-radius: 26px;
-        box-shadow:
-          0 8px 32px 0 rgba(5, 10, 20, 0.55),
-          0 1.5px 8px 0 rgba(80, 120, 180, 0.14) inset,
-          0 -1px 12px 0 rgba(56, 189, 248, 0.08) inset;
-        border: 1.5px solid rgba(120, 170, 240, 0.22);
-        backdrop-filter: blur(36px) saturate(240%);
-        -webkit-backdrop-filter: blur(36px) saturate(240%);
-        padding: 2em;
-        box-sizing: border-box;
+        flex: 1;
         display: flex;
         flex-direction: column;
-        gap: 1.1em;
-        position: relative;
-        overflow: hidden;
+        height: 100%;
+      }
+
+      .content-grid {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        height: 100%;
+      }
+
+      .right-pane {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+
+      .background-animation {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
       }
 
       .files-card {
         min-height: 240px;
-      }
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        text-align: center;
+        z-index: 1;
+        background: rgba(18, 28, 48, 0.96);
+        box-shadow: 0 8px 32px 0 rgba(5, 10, 20, 0.25);
+        border-radius: 24px;
+        padding: 2.5em 2em 2em 2em;
+        margin: 2em auto 0 auto;
+        max-width: 700px;
+        width: 100%;
+        box-sizing: border-box;
 
-      .section-card::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background: radial-gradient(
-          circle at 20% 0%,
-          rgba(56, 189, 248, 0.18),
-          transparent 45%
-        );
-        opacity: 0.8;
-        pointer-events: none;
+        margin-bottom: 48px;
       }
-
-      .section-card::after {
-        content: '';
-        position: absolute;
-        inset: 0;
-        border-radius: inherit;
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        pointer-events: none;
-        mix-blend-mode: screen;
+      .files-header {
+        padding-bottom: 0.5em;
+      }
+      .shared-files-list {
+        margin-top: 1em;
+      }
+      .empty-state {
+        color: #94a3b8;
+        font-size: 1.1em;
+        padding: 2em;
       }
 
       .section-title {
@@ -577,20 +592,6 @@ export class AppShell extends LiteElement {
         border-radius: 2px;
         margin: 1.2em 0 1.2em 0;
       }
-      .header {
-        font-size: 2.5em;
-        font-weight: 800;
-        letter-spacing: -1.5px;
-        color: #fff;
-        background: linear-gradient(90deg, #38bdf8 0%, #2563eb 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        margin-bottom: 1.2em;
-        padding-top: 0.2em;
-        text-align: center;
-        text-shadow: 0 2px 24px #2563eb33;
-      }
       .controls-row {
         display: flex;
         flex-wrap: wrap;
@@ -951,8 +952,9 @@ export class AppShell extends LiteElement {
         letter-spacing: 0.01em;
       }
       @media (max-width: 700px) {
-        .section-card {
-          padding: 1.2em 0.9em 1em 0.9em;
+        .files-header {
+          flex-wrap: wrap;
+          gap: 10px;
         }
 
         .controls-row {
@@ -970,6 +972,28 @@ export class AppShell extends LiteElement {
           flex-direction: column;
           align-items: stretch;
           text-align: center;
+          gap: 12px;
+          padding: 1.25em;
+        }
+
+        .shared-file-name {
+          width: 100%;
+          font-size: 1.15em;
+          margin-bottom: 2px;
+        }
+
+        .shared-file-peer {
+          display: block;
+          margin-bottom: 12px;
+          font-size: 0.9em;
+        }
+
+        .shared-file-item button,
+        .shared-file-item a.download-btn {
+          width: 100%;
+          justify-content: center;
+          padding: 12px 0;
+          font-size: 1.1em;
         }
       }
 
@@ -979,13 +1003,7 @@ export class AppShell extends LiteElement {
         }
 
         .content-grid {
-          grid-template-columns: 1fr;
-          align-items: start;
-        }
-
-        .selected-files,
-        .shared-files-list {
-          margin-bottom: 1.2em;
+          flex-direction: row;
         }
       }
     `
@@ -1259,20 +1277,20 @@ export class AppShell extends LiteElement {
             return
           }
           parts.push(chunkProto.content)
-          this.downloadBytesDone = Math.min(
+          this.downloadBytes_done = Math.min(
             this.downloadBytesTotal,
-            this.downloadBytesDone + chunkProto.content.length
+            this.downloadBytes_done + chunkProto.content.length
           )
-          this.downloadChunkDone += 1
+          this.downloadChunk_done += 1
           const elapsedSeconds = Math.max(
             0.5,
             (performance.now() - downloadStartedAt) / 1000
           )
-          this.downloadRateBytes = this.downloadBytesDone / elapsedSeconds
+          this.downloadRateBytes = this.downloadBytes_done / elapsedSeconds
           this.downloadEtaSeconds = this.downloadRateBytes
             ? Math.max(
                 0,
-                (this.downloadBytesTotal - this.downloadBytesDone) /
+                (this.downloadBytesTotal - this.downloadBytes_done) /
                   this.downloadRateBytes
               )
             : 0
@@ -1281,12 +1299,12 @@ export class AppShell extends LiteElement {
         }
       } else if (content) {
         parts.push(content)
-        this.downloadBytesTotal = content.length
-        this.downloadBytesDone = content.length
-        this.downloadChunkTotal = 1
-        this.downloadChunkDone = 1
+        this.downloadBytes_total = content.length
+        this.downloadBytes_done = content.length
+        this.downloadChunk_total = 1
+        this.downloadChunk_done = 1
         this.downloadStage = 'Downloading'
-        this.downloadRateBytes = this.downloadBytesTotal
+        this.downloadRateBytes = this.downloadBytes_total
         this.downloadEtaSeconds = 0
         this.requestRender()
       } else {
@@ -1622,9 +1640,9 @@ export class AppShell extends LiteElement {
       }
       const buffer = await file.arrayBuffer()
       item.doneBytes = item.size
-      this.processingBytesDone = Math.min(
+      this.processingBytes_done = Math.min(
         this.processingBytesTotal,
-        this.processingBytesDone + buffer.byteLength
+        this.processingBytes_done + buffer.byteLength
       )
       this.requestRender()
       return new Uint8Array(buffer)
@@ -1953,26 +1971,6 @@ export class AppShell extends LiteElement {
       <info-header .peerId=${this.peerId}></info-header>
       <div class="main-content">
         <div class="content-wrapper">
-          <div class="header">Peernet File Share</div>
-
-          <div class="section-card intro-card">
-            <h3 class="section-title">How it works</h3>
-            <div class="intro-text">
-              Peernet runs entirely in your browser. When you pick files, they
-              are prepared locally and shared directly with connected peers—no
-              central server stores your data. Transfers are fast because data
-              flows peer-to-peer, and every file is content‑hashed, so identical
-              files map to the same hash and duplicates aren’t re-sent. Anyone
-              with the shared link can download from your device while you're
-              online.
-            </div>
-            <ol class="steps-list">
-              <li>Upload files or a folder.</li>
-              <li>Peernet hashes and announces them to peers.</li>
-              <li>Share the download link; peers fetch from you directly.</li>
-            </ol>
-          </div>
-
           ${this.showHint
             ? html`
                 <div class="hint-bar">
@@ -1990,7 +1988,7 @@ export class AppShell extends LiteElement {
 
           <div class="content-grid">
             <div class="right-pane">
-              <div class="section-card files-card">
+              <div class="files-card">
                 <div class="files-header">
                   <h3 class="section-title">Files</h3>
                   <div class="files-actions">
@@ -2095,8 +2093,60 @@ export class AppShell extends LiteElement {
                                       0,
                                       16
                                     )}…</code
-                                  >`}
-                            &bull; Please be patient
+                                  >
+                                  Please be patient`}
+                          </div>
+                        </div>
+                      </div>
+                    `
+                  : ''}
+                ${this.isDownloading
+                  ? html`
+                      <div class="processing-banner">
+                        <span class="processing-icon">
+                          <custom-icon icon="download"></custom-icon>
+                        </span>
+                        <div class="processing-meta">
+                          <div class="processing-title">
+                            Downloading
+                            ${this.downloadBytesTotal
+                              ? html` •
+                                ${Math.round(
+                                  (this.downloadBytesDone /
+                                    this.downloadBytesTotal) *
+                                    100
+                                )}%`
+                              : ''}
+                          </div>
+                          <div class="processing-name">
+                            ${this.downloadStage === 'Preparing'
+                              ? html`Downloading hash
+                                  <code
+                                    >${this.downloadHash.slice(0, 16)}…</code
+                                  >
+                                  &bull; Please be patient`
+                              : html`${this.downloadName || ''}
+                                ${this.downloadStage
+                                  ? html` • ${this.downloadStage}`
+                                  : ''}
+                                ${this.downloadChunkTotal
+                                  ? html` • Chunks
+                                    ${this.downloadChunkDone}/${this
+                                      .downloadChunkTotal}`
+                                  : ''}
+                                ${this.downloadRateBytes
+                                  ? html` •
+                                    ${this.formatFileSize(
+                                      this.downloadRateBytes
+                                    )}/s`
+                                  : ''}
+                                ${this.downloadEtaSeconds &&
+                                this.downloadBytesTotal
+                                  ? html` • ETA
+                                    ${this.#formatDuration(
+                                      this.downloadEtaSeconds
+                                    )}`
+                                  : ''}`}
                           </div>
                         </div>
                       </div>
