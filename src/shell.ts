@@ -1,12 +1,28 @@
+// Helper to ensure ArrayBuffer type (not SharedArrayBuffer)
+const __SAB: any =
+  typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer : null
+function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
+  if (
+    u8.buffer instanceof ArrayBuffer &&
+    (!__SAB || !(u8.buffer instanceof __SAB))
+  ) {
+    return u8.buffer as ArrayBuffer
+  }
+  // Copy to new ArrayBuffer if needed
+  return new Uint8Array(u8).buffer as ArrayBuffer
+}
 import Peernet from './../node_modules/@leofcoin/peernet/exports/browser/peernet.js'
 import { LiteElement, html, css, property } from '@vandeurenglenn/lite'
 import { unsafeHTML } from 'lit/directives/unsafe-html.js'
 import '@vandeurenglenn/lite-elements/icon'
-import { getOrCreatePassword } from './password.js'
+import { getOrCreatePassword } from './utils/password.js'
 import './elements/info-header.js'
 
 import icons from './icons.js'
 import PeernetFile from '@leofcoin/peernet/file'
+import QRCode from 'qrcode'
+// @ts-ignore - qrcode is a CJS module; rollup-commonjs synthesizes a default
+const QRCodeLib: typeof QRCode = (QRCode as any)?.default ?? QRCode
 globalThis.peernet = globalThis.peernet || null
 
 declare global {
@@ -14,11 +30,27 @@ declare global {
 }
 
 export class AppShell extends LiteElement {
+  // ...existing code...
+  downloadError: string = ''
   @property({ type: String }) accessor peerId: string = ''
   @property({ type: Array }) accessor log: string[] = []
   @property({ type: Array }) accessor files: File[] = []
   @property({ type: Boolean }) accessor dropActive: boolean = false
   @property({ type: Boolean }) accessor showHint: boolean = true
+  @property({ type: Boolean }) accessor recipientMode: boolean = false
+  @property({ type: Array }) accessor diskFiles: Array<{
+    hash: string
+    name: string
+    size: number
+  }> = []
+  @property({ type: Boolean }) accessor diskExpanded: boolean = false
+  @property({ type: Boolean }) accessor diskLoading: boolean = false
+  @property({ type: String }) accessor diskQuery: string = ''
+  @property({ type: String }) accessor diskSort:
+    | 'name-asc'
+    | 'name-desc'
+    | 'size-desc'
+    | 'size-asc' = 'name-asc'
   @property({ type: String }) accessor shareHash: string = ''
   @property({ type: Boolean }) accessor isProcessing: boolean = false
   @property({ type: Number }) accessor processingTotal: number = 0
@@ -58,6 +90,16 @@ export class AppShell extends LiteElement {
     hash: string
     name?: string
   } | null = null
+  @property({ type: String }) accessor connectionPhase:
+    | 'idle'
+    | 'connecting'
+    | 'searching'
+    | 'peer'
+    | 'fetching'
+    | 'downloading'
+    | 'saved' = 'idle'
+  @property({ type: String }) accessor savedFilename: string = ''
+  @property({ type: String }) accessor qrPanelKey: string = ''
   static readonly chunkSizeBytes = 4 * 1024 * 1024
   static readonly chunkThresholdBytes = 64 * 1024 * 1024
   static readonly maxInMemoryBytes = 1024 * 1024 * 1024
@@ -149,6 +191,10 @@ export class AppShell extends LiteElement {
 
         margin-bottom: 48px;
       }
+      .disk-card {
+        margin-top: 0;
+        min-height: 0;
+      }
       .files-header {
         padding-bottom: 0.5em;
       }
@@ -184,18 +230,26 @@ export class AppShell extends LiteElement {
       }
 
       .share-cta {
-        background: rgba(56, 189, 248, 0.15);
-        color: #38bdf8;
-        border: 1.5px solid rgba(56, 189, 248, 0.4);
-        border-radius: 9px;
-        padding: 0.35em 0.8em;
-        font-size: 0.85em;
+        background: linear-gradient(120deg, #0ea5e9 0%, #2563eb 100%);
+        color: #f8fafc;
+        border: 1px solid rgba(148, 197, 255, 0.42);
+        border-radius: 11px;
+        padding: 0.5em 0.95em;
+        font-size: 0.84em;
         font-weight: 700;
+        letter-spacing: 0.02em;
         cursor: pointer;
+        transition:
+          transform 0.16s ease,
+          box-shadow 0.18s ease,
+          filter 0.18s ease;
+        box-shadow: 0 8px 18px rgba(14, 165, 233, 0.2);
       }
 
       .share-cta:hover {
-        background: rgba(56, 189, 248, 0.25);
+        transform: translateY(-1px);
+        filter: brightness(1.06);
+        box-shadow: 0 11px 22px rgba(14, 165, 233, 0.28);
       }
 
       .share-cta[disabled] {
@@ -268,34 +322,163 @@ export class AppShell extends LiteElement {
       }
 
       .share-hash-copy {
-        background: rgba(56, 189, 248, 0.15);
-        color: #38bdf8;
-        border: 1.5px solid rgba(56, 189, 248, 0.4);
-        border-radius: 8px;
-        padding: 0.3em 0.6em;
+        background: linear-gradient(120deg, #0ea5e9 0%, #2563eb 100%);
+        color: #f8fafc;
+        border: 1px solid rgba(148, 197, 255, 0.42);
+        border-radius: 10px;
+        padding: 0.38em 0.75em;
         font-size: 0.8em;
-        font-weight: 600;
+        font-weight: 700;
+        letter-spacing: 0.02em;
         cursor: pointer;
+        transition:
+          transform 0.16s ease,
+          box-shadow 0.18s ease,
+          filter 0.18s ease;
+        box-shadow: 0 7px 16px rgba(14, 165, 233, 0.22);
       }
 
       .share-hash-copy:hover {
-        background: rgba(56, 189, 248, 0.25);
+        transform: translateY(-1px);
+        filter: brightness(1.06);
+        box-shadow: 0 10px 21px rgba(14, 165, 233, 0.3);
       }
 
       .share-hash-share {
-        background: rgba(15, 23, 42, 0.6);
-        color: #e2e8f0;
-        border: 1px solid rgba(80, 120, 180, 0.25);
-        border-radius: 8px;
-        padding: 0.3em 0.6em;
+        background: rgba(15, 23, 42, 0.72);
+        color: #dbeafe;
+        border: 1px solid rgba(125, 160, 212, 0.36);
+        border-radius: 10px;
+        padding: 0.38em 0.72em;
         font-size: 0.8em;
         font-weight: 600;
         cursor: pointer;
+        transition:
+          transform 0.16s ease,
+          border-color 0.16s ease,
+          color 0.16s ease,
+          background 0.16s ease;
       }
 
       .share-hash-share:hover {
-        border-color: rgba(56, 189, 248, 0.45);
+        transform: translateY(-1px);
+        border-color: rgba(125, 211, 252, 0.62);
+        color: #7dd3fc;
+        background: rgba(15, 23, 42, 0.88);
+      }
+
+      .qr-panel {
+        margin: 0.4em 0 1em 0;
+        padding: 1em;
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(80, 120, 180, 0.25);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.6em;
+      }
+
+      .qr-panel canvas {
+        border-radius: 8px;
+        background: #e2e8f0;
+        max-width: 100%;
+        height: auto;
+      }
+
+      .qr-panel-url {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          'Liberation Mono', 'Courier New', monospace;
+        color: #94a3b8;
+        font-size: 0.75em;
+        word-break: break-all;
+        text-align: center;
+        max-width: 280px;
+      }
+
+      .status-banner {
+        display: flex;
+        align-items: center;
+        gap: 0.75em;
+        padding: 0.7em 0.95em;
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(56, 189, 248, 0.28);
+        color: #cbd5f5;
+        font-size: 0.92em;
+        margin-bottom: 0.8em;
+      }
+
+      .status-banner[data-phase='saved'] {
+        border-color: rgba(74, 222, 128, 0.45);
+        background: rgba(15, 42, 26, 0.55);
+      }
+
+      .status-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        background: rgba(56, 189, 248, 0.12);
         color: #38bdf8;
+        flex: 0 0 auto;
+      }
+
+      .status-icon.spin {
+        animation: spin 1.4s linear infinite;
+      }
+
+      .status-icon.ok {
+        border-color: rgba(74, 222, 128, 0.5);
+        background: rgba(74, 222, 128, 0.15);
+        color: #4ade80;
+      }
+
+      .status-icon custom-icon {
+        --custom-icon-size: 16px;
+        --custom-icon-color: currentColor;
+      }
+
+      .status-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 0.1em;
+        min-width: 0;
+        flex: 1;
+      }
+
+      .status-title {
+        font-weight: 600;
+        color: #e2e8f0;
+      }
+
+      .status-detail {
+        font-size: 0.85em;
+        color: #94a3b8;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .status-bar {
+        flex: 1 1 140px;
+        max-width: 220px;
+        height: 6px;
+        background: rgba(30, 41, 59, 0.55);
+        border-radius: 999px;
+        overflow: hidden;
+        border: 1px solid rgba(80, 120, 180, 0.2);
+      }
+
+      .status-bar span {
+        display: block;
+        height: 100%;
+        background: linear-gradient(90deg, #38bdf8 0%, #2563eb 100%);
+        transition: width 0.2s ease;
       }
 
       .processing-banner {
@@ -816,65 +999,171 @@ export class AppShell extends LiteElement {
         white-space: nowrap;
       }
 
-      .download-btn {
-        background: linear-gradient(90deg, #38bdf8 0%, #2563eb 100%);
-        color: #fff;
-        padding: 0.6em 1.2em;
-        border-radius: 7px;
-        text-decoration: none;
+      .shared-file-meta {
+        display: flex;
+        align-items: center;
+        gap: 0.5em;
+        flex-wrap: wrap;
+      }
+
+      .size-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.22em 0.58em;
+        border-radius: 999px;
+        background: rgba(14, 165, 233, 0.13);
+        border: 1px solid rgba(125, 211, 252, 0.3);
+        color: #bae6fd;
+        font-size: 0.75em;
         font-weight: 600;
+      }
+
+      .hash-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.2em 0.58em;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.8);
+        border: 1px solid rgba(80, 120, 180, 0.25);
+        color: #94a3b8;
+        font-size: 0.73em;
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          'Liberation Mono', 'Courier New', monospace;
+      }
+
+      .disk-toolbar {
+        display: grid;
+        grid-template-columns: 1.7fr auto auto auto;
+        gap: 0.6em;
+        align-items: center;
+        margin: 0.3em 0 0.9em 0;
+      }
+
+      .disk-search,
+      .disk-select {
+        height: 36px;
+        border-radius: 10px;
+        border: 1px solid rgba(80, 120, 180, 0.3);
+        background: rgba(15, 23, 42, 0.72);
+        color: #dbeafe;
+        font-size: 0.85em;
+        padding: 0 0.75em;
+        outline: none;
+      }
+
+      .disk-search:focus,
+      .disk-select:focus {
+        border-color: rgba(125, 211, 252, 0.7);
+        box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.22);
+      }
+
+      .disk-summary {
+        margin-bottom: 0.85em;
+        color: #94a3b8;
+        font-size: 0.82em;
+        text-align: left;
+      }
+
+      .disk-actions {
+        margin-left: auto;
+        display: inline-flex;
+        gap: 0.5em;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .download-btn {
+        background: linear-gradient(120deg, #0ea5e9 0%, #2563eb 100%);
+        color: #f8fafc;
+        border: 1px solid rgba(148, 197, 255, 0.42);
+        padding: 0.5em 0.84em;
+        border-radius: 10px;
+        text-decoration: none;
+        font-weight: 700;
+        letter-spacing: 0.02em;
         white-space: nowrap;
-        transition: all 0.2s;
-        font-size: 0.95em;
+        transition:
+          transform 0.16s ease,
+          box-shadow 0.18s ease,
+          filter 0.18s ease;
+        font-size: 0.83em;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
       }
 
       .download-btn:hover {
-        box-shadow: 0 4px 12px rgba(56, 189, 248, 0.4);
+        box-shadow: 0 10px 20px rgba(14, 165, 233, 0.3);
         transform: translateY(-1px);
+        filter: brightness(1.06);
+      }
+
+      .download-btn[disabled] {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
       }
 
       .share-btn {
-        background: rgba(15, 23, 42, 0.6);
-        color: #e2e8f0;
-        border: 1px solid rgba(80, 120, 180, 0.25);
-        border-radius: 7px;
-        padding: 0.5em 0.7em;
+        background: rgba(15, 23, 42, 0.72);
+        color: #dbeafe;
+        border: 1px solid rgba(125, 160, 212, 0.36);
+        border-radius: 10px;
+        padding: 0.45em 0.68em;
         text-decoration: none;
         font-weight: 600;
         white-space: nowrap;
-        transition: all 0.2s;
-        font-size: 0.9em;
+        transition:
+          transform 0.16s ease,
+          border-color 0.16s ease,
+          color 0.16s ease,
+          background 0.16s ease;
+        font-size: 0.8em;
         display: inline-flex;
         align-items: center;
         gap: 0.4em;
         cursor: pointer;
+        min-height: 34px;
       }
 
       .share-btn:hover {
-        border-color: rgba(56, 189, 248, 0.45);
-        color: #38bdf8;
+        transform: translateY(-1px);
+        border-color: rgba(125, 211, 252, 0.6);
+        color: #7dd3fc;
+        background: rgba(15, 23, 42, 0.9);
       }
 
       .shared-remove {
         background: rgba(15, 23, 42, 0.6);
         color: #f87171;
-        border: 1px solid rgba(248, 113, 113, 0.4);
-        border-radius: 7px;
-        padding: 0.45em 0.6em;
+        border: 1px solid rgba(248, 113, 113, 0.5);
+        border-radius: 10px;
+        padding: 0.45em 0.7em;
         text-decoration: none;
         font-weight: 600;
         white-space: nowrap;
-        transition: all 0.2s;
-        font-size: 0.9em;
+        transition:
+          transform 0.16s ease,
+          border-color 0.16s ease,
+          color 0.16s ease,
+          background 0.16s ease;
+        font-size: 0.8em;
         display: inline-flex;
         align-items: center;
         gap: 0.4em;
         cursor: pointer;
+        min-height: 34px;
       }
 
       .shared-remove:hover {
+        transform: translateY(-1px);
         border-color: rgba(248, 113, 113, 0.7);
-        color: #fecaca;
+        color: #fee2e2;
+        background: rgba(127, 29, 29, 0.18);
       }
 
       .empty-state {
@@ -957,6 +1246,10 @@ export class AppShell extends LiteElement {
           gap: 10px;
         }
 
+        .disk-toolbar {
+          grid-template-columns: 1fr;
+        }
+
         .controls-row {
           flex-direction: column;
           align-items: stretch;
@@ -1018,61 +1311,15 @@ export class AppShell extends LiteElement {
       this.#pendingDownload = { hash: downloadHash, name: downloadName }
       this.downloadConfirmPending = { hash: downloadHash, name: downloadName }
     }
-    if (shareHash || downloadHash) {
-      // Fetch shared files/folders from Peernet store
-      let hashesToFetch = []
-      if (shareHash) {
-        // Fetch all files for the share hash
-        // (Assume shareHash maps to a list of file hashes in your store)
-        try {
-          const fileList =
-            (await globalThis.shareStore.get(shareHash)) ??
-            (await peernet?.requestData?.(shareHash, 'share'))
-          if (fileList && Array.isArray(fileList)) {
-            hashesToFetch = fileList
-          }
-        } catch (e) {
-          this.addLog('Could not fetch shared files for hash: ' + shareHash)
-        }
-      } else if (downloadHash) {
-        hashesToFetch = [downloadHash]
-      }
-      // Fetch file metadata for each hash
-      const fetchedFiles = []
-      for (const hash of hashesToFetch) {
-        try {
-          const encoded =
-            (await globalThis.shareStore.get(hash)) ??
-            (await peernet?.requestData?.(hash, 'share'))
-          if (encoded) {
-            // Decode file metadata (assume peernet-file proto)
-            const fileProto = new peernet.protos['peernet-file']()
-            await fileProto.decode(encoded)
-            const linkSizes = Array.isArray(fileProto.links)
-              ? fileProto.links.reduce(
-                  (sum: number, link: { size?: number }) =>
-                    sum + (link?.size ?? 0),
-                  0
-                )
-              : 0
-            fetchedFiles.push({
-              name: fileProto.path,
-              hash,
-              peerId: this.peerId,
-              type: 'file',
-              size: fileProto.content?.length || linkSizes || 0
-            })
-          }
-        } catch (e) {
-          this.addLog('Could not fetch file for hash: ' + hash)
-        }
-      }
-      if (fetchedFiles.length) {
-        this.sharedFiles = fetchedFiles
-        this.addLog('Fetched shared files for download link.')
-      }
+    // Defer share/download fetching until peernet is started; just remember it.
+    const pendingShareHash = shareHash || ''
+    const pendingShareEntries: Array<{ hash: string; name?: string }> = []
+    if (downloadHash) {
+      pendingShareEntries.push({ hash: downloadHash, name: downloadName })
     }
-    this.#attachGlobalDropHandlers()
+    this.recipientMode = Boolean(shareHash || downloadHash)
+    if (this.recipientMode) this.connectionPhase = 'connecting'
+    if (!this.recipientMode) this.#attachGlobalDropHandlers()
     try {
       this.showHint = localStorage.getItem('peernet-hide-hint') !== '1'
     } catch (error) {
@@ -1104,7 +1351,16 @@ export class AppShell extends LiteElement {
       })
 
       pubsub.subscribe('peer:connected', (peer: any) => {
-        if (peer !== peernet.peerId) this.addLog(`Peer connected: ${peer}`)
+        if (peer !== peernet.peerId) {
+          this.addLog(`Peer connected: ${peer}`)
+          if (
+            this.recipientMode &&
+            (this.connectionPhase === 'connecting' ||
+              this.connectionPhase === 'searching')
+          ) {
+            this.connectionPhase = 'peer'
+          }
+        }
         if (
           this.#pendingDownload &&
           !this.#isSearching &&
@@ -1123,6 +1379,9 @@ export class AppShell extends LiteElement {
 
       await peernet.start()
       this.peerId = peernet.peerId
+      if (this.recipientMode && this.connectionPhase === 'connecting') {
+        this.connectionPhase = 'searching'
+      }
 
       // peernet is ready — dismiss loading immediately
       updateStatus('connected')
@@ -1131,6 +1390,26 @@ export class AppShell extends LiteElement {
       }, 500)
 
       this.addLog(`Peernet started. Your ID: ${peernet.peerId}`)
+
+      // Now that peernet is ready, resolve any incoming share/download links.
+      if (pendingShareHash) {
+        this.#resolveShareLink(pendingShareHash).catch((err) => {
+          this.addLog(`Failed to resolve share link: ${err}`)
+          console.error(err)
+        })
+      }
+      for (const entry of pendingShareEntries) {
+        // Surface the file in the list right away so user sees what is incoming.
+        this.sharedFiles = [
+          ...this.sharedFiles,
+          {
+            name: entry.name || entry.hash.slice(0, 12),
+            hash: entry.hash,
+            peerId: '',
+            type: 'file'
+          }
+        ]
+      }
     } catch (err) {
       this.addLog(`Failed to initialize Peernet: ${err}`)
       console.error(err)
@@ -1144,7 +1423,11 @@ export class AppShell extends LiteElement {
         try {
           this.addLog(`Fetching ${hash.slice(0, 12)}… from network`)
           data = await peernet.requestData(hash, 'share')
+          if (data) {
+            await globalThis.shareStore.put(hash, data)
+          }
         } catch {
+          this.addLog(`Failed to fetch ${hash.slice(0, 12)} from network`)
           // network fetch failed
         }
       }
@@ -1175,13 +1458,69 @@ export class AppShell extends LiteElement {
     link.remove()
     URL.revokeObjectURL(url)
     this.addLog(`Saved: ${this.#readyFilename}`)
+    const savedName = this.#readyFilename
     this.#readyBlob = undefined
     this.#readyFilename = undefined
     this.downloadReady = false
     this.downloadConfirmPending = null
     this.#pendingDownload = undefined
+    if (this.recipientMode) {
+      this.savedFilename = savedName
+      this.connectionPhase = 'saved'
+      setTimeout(() => {
+        if (this.connectionPhase === 'saved') {
+          this.connectionPhase = 'idle'
+          this.savedFilename = ''
+        }
+      }, 5000)
+    }
   }
+
+  #autoSavePending = false
+  #autoSaveListener?: () => void
+  #scheduleAutoSave() {
+    if (!this.recipientMode) return
+    if (!this.#readyBlob || !this.#readyFilename) return
+    const tryNow = () => {
+      if (document.visibilityState === 'visible' && document.hasFocus()) {
+        if (this.#autoSaveListener) {
+          document.removeEventListener(
+            'visibilitychange',
+            this.#autoSaveListener
+          )
+          window.removeEventListener('focus', this.#autoSaveListener)
+          this.#autoSaveListener = undefined
+        }
+        this.#autoSavePending = false
+        this.#saveToFilesystem()
+        return true
+      }
+      return false
+    }
+    if (tryNow()) return
+    if (this.#autoSavePending) return
+    this.#autoSavePending = true
+    const listener = () => {
+      if (!this.downloadReady) {
+        this.#autoSavePending = false
+        document.removeEventListener('visibilitychange', listener)
+        window.removeEventListener('focus', listener)
+        this.#autoSaveListener = undefined
+        return
+      }
+      tryNow()
+    }
+    this.#autoSaveListener = listener
+    document.addEventListener('visibilitychange', listener)
+    window.addEventListener('focus', listener)
+  }
+
   async #downloadSharedFile(hash: string, name?: string) {
+    // Prevent duplicate downloads for the same hash
+    if (this.isDownloading && this.downloadHash === hash) {
+      this.addLog(`Download already in progress for hash: ${hash}`)
+      return
+    }
     let downloadStartedAt = 0
     const resetDownload = () => {
       this.isDownloading = false
@@ -1200,16 +1539,26 @@ export class AppShell extends LiteElement {
       this.downloadReady = false
     }
 
+    // Immediate visible feedback so the user knows the click registered.
+    this.addLog(`Download requested: ${name || hash.slice(0, 12)}…`)
+    if (this.recipientMode) this.connectionPhase = 'fetching'
+    this.isDownloading = true
+    this.downloadHash = hash
+    this.downloadName = name || hash.slice(0, 12)
+    this.downloadStage = 'Preparing'
+    this.downloadBytesDone = 0
+    this.downloadBytesTotal = 0
+    this.downloadChunkTotal = 0
+    this.downloadChunkDone = 0
+    this.requestRender()
+
     try {
       await globalThis.shareStore.get(hash)
-    } catch (error) {
-      console.error(error)
-
-      if (error.message.includes('not found')) {
-        this.addLog(`File not found for download hash: ${hash}`)
+    } catch (error: any) {
+      if (error?.message?.includes?.('not found')) {
+        // expected when the hash is not in the local store
       } else {
-        this.addLog(`Error accessing share store for hash ${hash}: ${error}`)
-        console.error(error)
+        console.warn('shareStore.get pre-check failed:', error)
       }
     }
     try {
@@ -1225,10 +1574,15 @@ export class AppShell extends LiteElement {
         )
       )
       const encoded = await Promise.race([peernet.get(hash, 'share'), _timeout])
-      await globalThis.shareStore.put(hash, encoded)
       if (!encoded) {
         this.addLog(`Could not find file for download hash: ${hash}`)
+        resetDownload()
         return
+      }
+      try {
+        await globalThis.shareStore.put(hash, encoded)
+      } catch {
+        // local cache write failure is non-fatal
       }
 
       if (this.#pendingDownload?.hash === hash)
@@ -1263,48 +1617,62 @@ export class AppShell extends LiteElement {
         this.downloadChunkTotal = ordered.length
         this.downloadChunkDone = 0
         this.downloadStage = 'Downloading'
+        if (this.recipientMode) this.connectionPhase = 'downloading'
 
         for (const link of ordered) {
           const chunkEncoded = await this.#getFromShareStore(link.hash)
           if (!chunkEncoded) {
             this.addLog(`Missing chunk for ${filename}: ${link.hash}`)
+            this.downloadError = `Missing chunk for ${filename}: ${link.hash}`
+            this.isDownloading = false
+            this.downloadStage = 'Error'
+            this.requestRender()
+            resetDownload()
             return
           }
-          const chunkProto = new peernet.protos['peernet-file']()
-          await chunkProto.decode(chunkEncoded)
-          if (!chunkProto.content) {
+          console.log('Got chunk', link.hash, chunkEncoded)
+          const chunkProto = new peernet.protos['peernet-file'](chunkEncoded)
+          if (!chunkProto.decoded.content) {
             this.addLog(`Invalid chunk content for ${filename}`)
+            this.downloadError = `Invalid chunk content for ${filename}`
+            this.isDownloading = false
+            this.downloadStage = 'Error'
+            this.requestRender()
+            resetDownload()
             return
           }
-          parts.push(chunkProto.content)
-          this.downloadBytes_done = Math.min(
+          parts.push(chunkProto.decoded.content)
+          this.downloadBytesDone = Math.min(
             this.downloadBytesTotal,
-            this.downloadBytes_done + chunkProto.content.length
+            this.downloadBytesDone + chunkProto.decoded.content.length
           )
-          this.downloadChunk_done += 1
+          this.downloadChunkDone += 1
           const elapsedSeconds = Math.max(
             0.5,
             (performance.now() - downloadStartedAt) / 1000
           )
-          this.downloadRateBytes = this.downloadBytes_done / elapsedSeconds
+          this.downloadRateBytes = this.downloadBytesDone / elapsedSeconds
           this.downloadEtaSeconds = this.downloadRateBytes
             ? Math.max(
                 0,
-                (this.downloadBytesTotal - this.downloadBytes_done) /
+                (this.downloadBytesTotal - this.downloadBytesDone) /
                   this.downloadRateBytes
               )
             : 0
           this.requestRender()
-          await new Promise((resolve) => requestAnimationFrame(() => resolve()))
+          await new Promise((resolve) =>
+            requestAnimationFrame(() => resolve(true))
+          )
         }
       } else if (content) {
         parts.push(content)
-        this.downloadBytes_total = content.length
-        this.downloadBytes_done = content.length
-        this.downloadChunk_total = 1
-        this.downloadChunk_done = 1
+        this.downloadBytesTotal = content.length
+        this.downloadBytesDone = content.length
+        this.downloadChunkTotal = 1
+        this.downloadChunkDone = 1
         this.downloadStage = 'Downloading'
-        this.downloadRateBytes = this.downloadBytes_total
+        if (this.recipientMode) this.connectionPhase = 'downloading'
+        this.downloadRateBytes = this.downloadBytesTotal
         this.downloadEtaSeconds = 0
         this.requestRender()
       } else {
@@ -1314,11 +1682,21 @@ export class AppShell extends LiteElement {
 
       this.downloadStage = 'Ready'
       this.requestRender()
-      this.#readyBlob = new Blob(parts)
+      // Fix: ensure all parts are ArrayBuffer for Blob
+      this.#readyBlob = new Blob(
+        parts.map((p) => {
+          if (p instanceof Uint8Array) {
+            return toArrayBuffer(p)
+          }
+          return p
+        })
+      )
       this.#readyFilename = filename
       this.isDownloading = false
       this.downloadReady = true
       this.addLog(`File ready to save: ${filename}`)
+      this.requestRender()
+      this.#scheduleAutoSave()
     } catch (error) {
       this.addLog(`Failed to download shared file: ${error}`)
       console.error(error)
@@ -1627,9 +2005,23 @@ export class AppShell extends LiteElement {
   }
 
   #concatUint8(a: Uint8Array, b: Uint8Array): Uint8Array {
-    const output = new Uint8Array(a.length + b.length)
-    output.set(a, 0)
-    output.set(b, a.length)
+    // Always copy to a new ArrayBuffer to avoid SharedArrayBuffer issues
+    function toSafeUint8Array(u8: Uint8Array): Uint8Array {
+      if (
+        u8.buffer instanceof ArrayBuffer &&
+        (!__SAB || !(u8.buffer instanceof __SAB))
+      ) {
+        return u8
+      }
+      // Copy to new ArrayBuffer if needed
+      return new Uint8Array(Array.from(u8))
+    }
+    const aSafe = toSafeUint8Array(a)
+    const bSafe = toSafeUint8Array(b)
+    const abuf = new ArrayBuffer(aSafe.length + bSafe.length)
+    const output = new Uint8Array(abuf)
+    output.set(aSafe, 0)
+    output.set(bSafe, aSafe.length)
     return output
   }
 
@@ -1640,9 +2032,9 @@ export class AppShell extends LiteElement {
       }
       const buffer = await file.arrayBuffer()
       item.doneBytes = item.size
-      this.processingBytes_done = Math.min(
+      this.processingBytesDone = Math.min(
         this.processingBytesTotal,
-        this.processingBytes_done + buffer.byteLength
+        this.processingBytesDone + buffer.byteLength
       )
       this.requestRender()
       return new Uint8Array(buffer)
@@ -1662,7 +2054,9 @@ export class AppShell extends LiteElement {
         chunks.push(value)
         received += value.length
         this.#updateProcessingProgress(item, value.length)
-        await new Promise((resolve) => requestAnimationFrame(() => resolve()))
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => resolve(true))
+        )
       }
     }
     const output = new Uint8Array(received)
@@ -1688,8 +2082,21 @@ export class AppShell extends LiteElement {
       const { done, value } = await reader.read()
       if (done) break
       if (value) {
-        pending = pending.length ? this.#concatUint8(pending, value) : value
-        this.#updateProcessingProgress(item, value.length)
+        // Ensure value is Uint8Array<ArrayBuffer>
+        // Always use safe Uint8Array (ArrayBuffer, not SharedArrayBuffer)
+        let safeValue: Uint8Array
+        if (
+          value.buffer instanceof ArrayBuffer &&
+          (!__SAB || !(value.buffer instanceof __SAB))
+        ) {
+          safeValue = value
+        } else {
+          safeValue = new Uint8Array(Array.from(value))
+        }
+        pending = pending.length
+          ? this.#concatUint8(pending, safeValue)
+          : safeValue
+        this.#updateProcessingProgress(item, safeValue.length)
         while (pending.length >= AppShell.chunkSizeBytes) {
           const chunk = pending.slice(0, AppShell.chunkSizeBytes)
           pending = pending.slice(AppShell.chunkSizeBytes)
@@ -1714,7 +2121,9 @@ export class AppShell extends LiteElement {
           })
           index += 1
         }
-        await new Promise((resolve) => requestAnimationFrame(() => resolve()))
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => resolve(true))
+        )
       }
     }
 
@@ -1767,6 +2176,7 @@ export class AppShell extends LiteElement {
         return !rel.startsWith(prefix)
       })
     } else {
+      // Only remove file if explicitly requested (user action)
       this.sharedFiles = this.sharedFiles.filter((item) => item !== entry)
       this.files = this.files.filter((file) => file.name !== entry.name)
     }
@@ -1928,7 +2338,21 @@ export class AppShell extends LiteElement {
     this.processingName = ''
     this.processingItems = []
 
-    this.sharedFiles = newSharedFiles
+    // Only update sharedFiles if not already present (prevents removal after download)
+    if (!this.sharedFiles || !this.sharedFiles.length) {
+      this.sharedFiles = newSharedFiles
+    } else {
+      // Only add new files that are not already in sharedFiles
+      for (const file of newSharedFiles) {
+        if (
+          !this.sharedFiles.some(
+            (f) => f.hash === file.hash && f.name === file.name
+          )
+        ) {
+          this.sharedFiles.push(file)
+        }
+      }
+    }
     const allHashes = newSharedFiles
       .filter((file) => file.hash)
       .map((file) => file.hash)
@@ -1940,11 +2364,333 @@ export class AppShell extends LiteElement {
   }
 
   async #computeShareHash(hashes: string[]): Promise<string> {
-    const sorted = [...hashes].sort()
-    const data = new TextEncoder().encode(sorted.join('|'))
-    const digest = await crypto.subtle.digest('SHA-256', data)
-    const bytes = Array.from(new Uint8Array(digest))
-    return bytes.map((b) => b.toString(16).padStart(2, '0')).join('')
+    // Build a peernet-file manifest listing all shared file hashes and store
+    // it in the share store. The manifest's content-hash IS the share hash,
+    // so peers can fetch it via `peernet.get(shareHash, 'share')`.
+    const entries = this.sharedFiles.filter(
+      (file) => file.hash && hashes.includes(file.hash)
+    )
+    const links = entries.map((entry) => ({
+      hash: entry.hash,
+      path: entry.name,
+      size: 0
+    }))
+    const manifest = new peernet.protos['peernet-file']({
+      path: 'share-manifest',
+      links
+    })
+    await manifest.encode()
+    const hash = await manifest.hash()
+    try {
+      await globalThis.shareStore.put(hash, manifest.encoded)
+    } catch (e) {
+      this.addLog(`Warning: could not store share manifest: ${e}`)
+    }
+    return hash
+  }
+
+  async #resolveShareLink(shareHash: string): Promise<void> {
+    this.addLog(`Resolving share ${shareHash.slice(0, 12)}…`)
+    if (this.recipientMode) this.connectionPhase = 'fetching'
+    let encoded: Uint8Array | undefined
+    try {
+      encoded = await peernet.get(shareHash, 'share')
+    } catch (err) {
+      this.addLog(`Could not fetch share manifest: ${err}`)
+      return
+    }
+    if (!encoded) {
+      this.addLog(`Share manifest not found for ${shareHash.slice(0, 12)}…`)
+      return
+    }
+    try {
+      await globalThis.shareStore.put(shareHash, encoded)
+    } catch {
+      // ignore local-store write errors
+    }
+    let manifest: PeernetFile
+    try {
+      manifest = new peernet.protos['peernet-file'](encoded) as PeernetFile
+    } catch (err) {
+      this.addLog(`Invalid share manifest: ${err}`)
+      return
+    }
+    const links = (manifest.decoded as any)?.links
+    if (!Array.isArray(links) || !links.length) {
+      this.addLog('Share manifest contained no files.')
+      return
+    }
+    const incoming = links.map(
+      (link: { hash: string; path?: string; size?: number }) => ({
+        name: link.path || link.hash.slice(0, 12),
+        hash: link.hash,
+        peerId: '',
+        type: 'file' as const
+      })
+    )
+    const existingHashes = new Set(this.sharedFiles.map((f) => f.hash))
+    const merged = [...this.sharedFiles]
+    for (const item of incoming) {
+      if (!existingHashes.has(item.hash)) merged.push(item)
+    }
+    this.sharedFiles = merged
+    this.shareHash = shareHash
+    this.addLog(`Share resolved: ${incoming.length} file(s) available.`)
+  }
+
+  async #refreshDiskFiles(): Promise<void> {
+    if (!globalThis.shareStore?.entries) return
+    this.diskLoading = true
+    this.requestRender()
+    try {
+      const entries: [string, Uint8Array][] =
+        await globalThis.shareStore.entries()
+      // Build set of chunk hashes referenced by manifests so we can hide them.
+      const chunkHashes = new Set<string>()
+      const decoded: Array<{
+        hash: string
+        path: string
+        size: number
+        isManifest: boolean
+        isChunk: boolean
+      }> = []
+      for (const [hash, encoded] of entries) {
+        try {
+          const proto = new peernet.protos['peernet-file'](
+            encoded
+          ) as PeernetFile
+          const data = proto.decoded as {
+            path?: string
+            content?: Uint8Array
+            links?: { hash: string; size?: number }[]
+          }
+          const path = data.path || ''
+          const isChunk = /\.part-\d+$/.test(path)
+          const isManifest = Array.isArray(data.links) && data.links.length > 0
+          if (isManifest) {
+            for (const link of data.links!) chunkHashes.add(link.hash)
+          }
+          const size = isManifest
+            ? (data.links || []).reduce((s, l) => s + (l.size ?? 0), 0)
+            : (data.content?.length ?? 0)
+          decoded.push({ hash, path, size, isManifest, isChunk })
+        } catch {
+          // not a peernet-file we can decode; skip from explorer
+        }
+      }
+      this.diskFiles = decoded
+        .filter((d) => !d.isChunk && !chunkHashes.has(d.hash) && d.path)
+        .map((d) => ({ hash: d.hash, name: d.path, size: d.size }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    } catch (err) {
+      this.addLog(`Could not read local store: ${err}`)
+    } finally {
+      this.diskLoading = false
+      this.requestRender()
+    }
+  }
+
+  #toggleDiskExplorer = async () => {
+    this.diskExpanded = !this.diskExpanded
+    if (this.diskExpanded) await this.#refreshDiskFiles()
+  }
+
+  #copyDiskHash = async (hash: string) => {
+    try {
+      await navigator.clipboard.writeText(hash)
+      this.addLog(`Copied hash: ${hash.slice(0, 12)}…`)
+    } catch (error) {
+      this.addLog(`Failed to copy hash: ${error}`)
+    }
+  }
+
+  #publishDiskFile = async (file: { hash: string; name: string }) => {
+    if (this.sharedFiles.some((entry) => entry.hash === file.hash)) {
+      this.addLog(`${file.name} is already in the shared list.`)
+      return
+    }
+    this.sharedFiles = [
+      ...this.sharedFiles,
+      {
+        name: file.name,
+        hash: file.hash,
+        peerId: this.peerId,
+        type: 'file'
+      }
+    ]
+    await this.#refreshShareHash()
+    this.addLog(`Added ${file.name} to shared list.`)
+  }
+
+  #getFilteredDiskFiles() {
+    const query = this.diskQuery.trim().toLowerCase()
+    const filtered = query
+      ? this.diskFiles.filter((file) =>
+          `${file.name} ${file.hash}`.toLowerCase().includes(query)
+        )
+      : [...this.diskFiles]
+
+    filtered.sort((a, b) => {
+      if (this.diskSort === 'name-asc') return a.name.localeCompare(b.name)
+      if (this.diskSort === 'name-desc') return b.name.localeCompare(a.name)
+      if (this.diskSort === 'size-asc') return a.size - b.size
+      return b.size - a.size
+    })
+
+    return filtered
+  }
+
+  #renderDiskExplorer() {
+    const filtered = this.#getFilteredDiskFiles()
+    const totalSize = filtered.reduce((sum, file) => sum + (file.size || 0), 0)
+    return html`
+      <div class="files-card disk-card">
+        <div class="files-header">
+          <h3 class="section-title">On disk</h3>
+          <div class="files-actions">
+            ${this.diskExpanded
+              ? html`
+                  <button
+                    class="share-cta"
+                    @click=${() => this.#refreshDiskFiles()}
+                    ?disabled=${this.diskLoading}
+                    title="Reload local store"
+                  >
+                    ${this.diskLoading ? 'Loading…' : 'Refresh'}
+                  </button>
+                `
+              : ''}
+            <button
+              class="share-cta"
+              @click=${this.#toggleDiskExplorer}
+              title="Browse files cached locally by peernet"
+            >
+              ${this.diskExpanded ? 'Hide' : 'Browse local store'}
+            </button>
+          </div>
+        </div>
+        ${this.diskExpanded
+          ? html`
+              <div class="disk-toolbar">
+                <input
+                  class="disk-search"
+                  type="search"
+                  placeholder="Search name or hash"
+                  .value=${this.diskQuery}
+                  @input=${(event: Event) => {
+                    const target = event.target as HTMLInputElement
+                    this.diskQuery = target.value
+                  }}
+                />
+                <select
+                  class="disk-select"
+                  .value=${this.diskSort}
+                  @change=${(event: Event) => {
+                    const target = event.target as HTMLSelectElement
+                    this.diskSort = target.value as
+                      | 'name-asc'
+                      | 'name-desc'
+                      | 'size-desc'
+                      | 'size-asc'
+                  }}
+                >
+                  <option value="name-asc">Name A-Z</option>
+                  <option value="name-desc">Name Z-A</option>
+                  <option value="size-desc">Largest first</option>
+                  <option value="size-asc">Smallest first</option>
+                </select>
+                <button
+                  class="share-btn"
+                  @click=${() => {
+                    this.diskQuery = ''
+                    this.diskSort = 'name-asc'
+                  }}
+                  title="Reset filters"
+                >
+                  Reset
+                </button>
+                <button
+                  class="share-btn"
+                  @click=${() => this.#refreshDiskFiles()}
+                  ?disabled=${this.diskLoading}
+                  title="Reload local store"
+                >
+                  ${this.diskLoading ? 'Loading…' : 'Refresh'}
+                </button>
+              </div>
+              <div class="disk-summary">
+                ${filtered.length} item(s)
+                ${filtered.length
+                  ? html` • ${this.formatFileSize(totalSize)}`
+                  : ''}
+              </div>
+              <div class="shared-files-list">
+                ${this.diskLoading
+                  ? html`<div class="empty-state">Reading local store…</div>`
+                  : filtered.length === 0
+                    ? html`<div class="empty-state">Nothing cached yet.</div>`
+                    : filtered.map(
+                        (file) => html`
+                          <div class="shared-file-item">
+                            <div class="shared-file-name">
+                              <custom-icon icon="download"></custom-icon>
+                              ${file.name}
+                            </div>
+                            <div class="shared-file-meta">
+                              ${file.size
+                                ? html`<span class="size-pill"
+                                    >${this.formatFileSize(file.size)}</span
+                                  >`
+                                : html`<span class="size-pill">0 B</span>`}
+                              <span class="hash-pill"
+                                >${file.hash.slice(0, 12)}…${file.hash.slice(
+                                  -6
+                                )}</span
+                              >
+                            </div>
+                            <div class="disk-actions">
+                              <button
+                                class="share-btn"
+                                @click=${() => this.#copyDiskHash(file.hash)}
+                                title="Copy file hash"
+                              >
+                                Copy hash
+                              </button>
+                              <button
+                                class="share-btn"
+                                ?disabled=${this.sharedFiles.some(
+                                  (entry) => entry.hash === file.hash
+                                )}
+                                @click=${() => this.#publishDiskFile(file)}
+                                title="Add this file to your shared list"
+                              >
+                                ${this.sharedFiles.some(
+                                  (entry) => entry.hash === file.hash
+                                )
+                                  ? 'Shared'
+                                  : 'Add to shared'}
+                              </button>
+                              <button
+                                class="download-btn"
+                                ?disabled=${this.isDownloading &&
+                                this.downloadHash === file.hash}
+                                @click=${() =>
+                                  this.#downloadSharedFile(
+                                    file.hash,
+                                    file.name
+                                  )}
+                              >
+                                Download
+                              </button>
+                            </div>
+                          </div>
+                        `
+                      )}
+              </div>
+            `
+          : ''}
+      </div>
+    `
   }
 
   #copyShareHash = () => {
@@ -1966,12 +2712,176 @@ export class AppShell extends LiteElement {
     navigator.clipboard.writeText(url.toString())
   }
 
+  #shareAllUrl(): string {
+    return `${location.origin}${location.pathname}?share=${this.shareHash}`
+  }
+
+  #fileShareUrl(hash: string, name: string): string {
+    const params = new URLSearchParams()
+    params.set('download', hash)
+    params.set('name', name)
+    return `${location.origin}${location.pathname}?${params.toString()}`
+  }
+
+  #toggleQrPanel = (key: string) => {
+    this.qrPanelKey = this.qrPanelKey === key ? '' : key
+    if (this.qrPanelKey === key) {
+      // Render after DOM updates so canvas exists.
+      requestAnimationFrame(() => this.#renderQrCanvas(key))
+    }
+  }
+
+  #renderQrCanvas(key: string) {
+    const canvas = this.shadowRoot?.querySelector(
+      `canvas[data-qr="${key}"]`
+    ) as HTMLCanvasElement | null
+    if (!canvas) return
+    let url = ''
+    if (key === 'all') url = this.#shareAllUrl()
+    else if (key.startsWith('file:')) {
+      const rest = key.slice(5)
+      const sep = rest.indexOf('|')
+      const hash = sep === -1 ? rest : rest.slice(0, sep)
+      const name = sep === -1 ? '' : rest.slice(sep + 1)
+      url = this.#fileShareUrl(hash, name)
+    }
+    if (!url) return
+    QRCodeLib.toCanvas(canvas, url, {
+      width: 224,
+      margin: 1,
+      color: { dark: '#0f172a', light: '#e2e8f0' }
+    }).catch((err: any) => {
+      this.addLog(`Failed to render QR: ${err}`)
+    })
+  }
+
+  #renderQrPanel(key: string, url: string) {
+    return html`
+      <div class="qr-panel">
+        <canvas data-qr=${key} width="224" height="224"></canvas>
+        <div class="qr-panel-url">${url}</div>
+      </div>
+    `
+  }
+
+  #renderRecipientStatusBanner() {
+    const phase = this.connectionPhase
+    const targetName =
+      this.downloadName ||
+      this.downloadConfirmPending?.name ||
+      this.#readyFilename ||
+      ''
+    type BannerSpec = {
+      title: string
+      detail: any
+      iconName: string
+      iconClass: string
+      showBar?: boolean
+      barPercent?: number
+      saveButton?: boolean
+    }
+    let spec: BannerSpec | null = null
+    if (phase === 'connecting') {
+      spec = {
+        title: 'Connecting',
+        detail: 'Starting peernet…',
+        iconName: 'upload',
+        iconClass: 'spin'
+      }
+    } else if (phase === 'searching') {
+      spec = {
+        title: 'Searching peers',
+        detail: 'Looking for someone to share with you…',
+        iconName: 'upload',
+        iconClass: 'spin'
+      }
+    } else if (phase === 'peer') {
+      spec = {
+        title: 'Found peer',
+        detail: 'Requesting file information…',
+        iconName: 'download',
+        iconClass: 'spin'
+      }
+    } else if (phase === 'fetching') {
+      spec = {
+        title: 'Fetching manifest',
+        detail: targetName || 'Resolving share link…',
+        iconName: 'download',
+        iconClass: 'spin'
+      }
+    } else if (phase === 'downloading' || this.isDownloading) {
+      const percent = this.downloadBytesTotal
+        ? Math.round((this.downloadBytesDone / this.downloadBytesTotal) * 100)
+        : 0
+      const detailParts: any[] = [targetName || 'Downloading…']
+      if (this.downloadChunkTotal)
+        detailParts.push(
+          ` • Chunks ${this.downloadChunkDone}/${this.downloadChunkTotal}`
+        )
+      if (this.downloadRateBytes)
+        detailParts.push(` • ${this.formatFileSize(this.downloadRateBytes)}/s`)
+      if (this.downloadEtaSeconds && this.downloadBytesTotal)
+        detailParts.push(
+          ` • ETA ${this.#formatDuration(this.downloadEtaSeconds)}`
+        )
+      spec = {
+        title: `Downloading${this.downloadBytesTotal ? ` • ${percent}%` : ''}`,
+        detail: detailParts,
+        iconName: 'download',
+        iconClass: 'spin',
+        showBar: true,
+        barPercent: percent
+      }
+    } else if (this.downloadReady) {
+      spec = {
+        title: 'Ready to save',
+        detail: this.#readyFilename || '',
+        iconName: 'download',
+        iconClass: '',
+        saveButton: true
+      }
+    } else if (phase === 'saved') {
+      spec = {
+        title: 'Saved',
+        detail: this.savedFilename || '',
+        iconName: 'check',
+        iconClass: 'ok'
+      }
+    }
+    if (!spec) return ''
+    return html`
+      <div class="status-banner" data-phase=${phase}>
+        <span class="status-icon ${spec.iconClass}">
+          <custom-icon icon=${spec.iconName}></custom-icon>
+        </span>
+        <div class="status-meta">
+          <div class="status-title">${spec.title}</div>
+          <div class="status-detail">${spec.detail}</div>
+        </div>
+        ${spec.showBar
+          ? html`<div class="status-bar">
+              <span style="width:${spec.barPercent ?? 0}%"></span>
+            </div>`
+          : ''}
+        ${spec.saveButton
+          ? html`<button
+              class="share-btn"
+              style="margin-left:auto;white-space:nowrap"
+              @click=${this.#saveToFilesystem}
+            >
+              Save to disk
+            </button>`
+          : ''}
+      </div>
+    `
+  }
+
   render() {
     return html`
       <info-header .peerId=${this.peerId}></info-header>
       <div class="main-content">
         <div class="content-wrapper">
-          ${this.showHint
+          ${this.showHint && !this.recipientMode
             ? html`
                 <div class="hint-bar">
                   <div class="hint-text">
@@ -1990,21 +2900,27 @@ export class AppShell extends LiteElement {
             <div class="right-pane">
               <div class="files-card">
                 <div class="files-header">
-                  <h3 class="section-title">Files</h3>
-                  <div class="files-actions">
-                    <button
-                      class="share-cta"
-                      @click=${this.#copyShareLink}
-                      ?disabled=${!this.shareHash}
-                      title=${this.shareHash
-                        ? 'Copy share link for all files'
-                        : 'Share link will appear after files are shared'}
-                    >
-                      Share all
-                    </button>
-                  </div>
+                  <h3 class="section-title">
+                    ${this.recipientMode ? 'Available to download' : 'Files'}
+                  </h3>
+                  ${this.recipientMode
+                    ? ''
+                    : html`
+                        <div class="files-actions">
+                          <button
+                            class="share-cta"
+                            @click=${this.#copyShareLink}
+                            ?disabled=${!this.shareHash}
+                            title=${this.shareHash
+                              ? 'Copy share link for all files'
+                              : 'Share link will appear after files are shared'}
+                          >
+                            Share all
+                          </button>
+                        </div>
+                      `}
                 </div>
-                ${this.shareHash
+                ${this.shareHash && !this.recipientMode
                   ? html`
                       <div class="share-hash-row">
                         <span class="share-hash-label">All files hash:</span>
@@ -2026,7 +2942,17 @@ export class AppShell extends LiteElement {
                         >
                           Share
                         </button>
+                        <button
+                          class="share-hash-share"
+                          @click=${() => this.#toggleQrPanel('all')}
+                          title="Show QR code for the share link"
+                        >
+                          ${this.qrPanelKey === 'all' ? 'Hide QR' : 'Show QR'}
+                        </button>
                       </div>
+                      ${this.qrPanelKey === 'all'
+                        ? this.#renderQrPanel('all', this.#shareAllUrl())
+                        : ''}
                     `
                   : ''}
                 ${this.isProcessing
@@ -2072,171 +2998,133 @@ export class AppShell extends LiteElement {
                       </div>
                     `
                   : ''}
-                ${this.downloadConfirmPending &&
-                !this.isDownloading &&
-                !this.downloadReady
-                  ? html`
-                      <div class="processing-banner" style="cursor:default">
-                        <span class="processing-icon">
-                          <custom-icon icon="download"></custom-icon>
-                        </span>
-                        <div class="processing-meta">
-                          <div class="processing-title">
-                            Fetching from network…
-                          </div>
-                          <div class="processing-name">
-                            ${this.downloadConfirmPending.name
-                              ? this.downloadConfirmPending.name
-                              : html`Hash
-                                  <code
-                                    >${this.downloadConfirmPending.hash.slice(
-                                      0,
-                                      16
-                                    )}…</code
-                                  >
-                                  Please be patient`}
-                          </div>
-                        </div>
-                      </div>
-                    `
-                  : ''}
-                ${this.isDownloading
-                  ? html`
-                      <div class="processing-banner">
-                        <span class="processing-icon">
-                          <custom-icon icon="download"></custom-icon>
-                        </span>
-                        <div class="processing-meta">
-                          <div class="processing-title">
-                            Downloading
-                            ${this.downloadBytesTotal
-                              ? html` •
-                                ${Math.round(
-                                  (this.downloadBytesDone /
-                                    this.downloadBytesTotal) *
-                                    100
-                                )}%`
-                              : ''}
-                          </div>
-                          <div class="processing-name">
-                            ${this.downloadStage === 'Preparing'
-                              ? html`Downloading hash
-                                  <code
-                                    >${this.downloadHash.slice(0, 16)}…</code
-                                  >
-                                  &bull; Please be patient`
-                              : html`${this.downloadName || ''}
-                                ${this.downloadStage
-                                  ? html` • ${this.downloadStage}`
-                                  : ''}
-                                ${this.downloadChunkTotal
-                                  ? html` • Chunks
-                                    ${this.downloadChunkDone}/${this
-                                      .downloadChunkTotal}`
-                                  : ''}
-                                ${this.downloadRateBytes
-                                  ? html` •
-                                    ${this.formatFileSize(
-                                      this.downloadRateBytes
-                                    )}/s`
-                                  : ''}
-                                ${this.downloadEtaSeconds &&
-                                this.downloadBytesTotal
-                                  ? html` • ETA
-                                    ${this.#formatDuration(
-                                      this.downloadEtaSeconds
-                                    )}`
-                                  : ''}`}
-                          </div>
-                        </div>
-                      </div>
-                    `
-                  : ''}
-                ${this.downloadReady
-                  ? html`
-                      <div class="processing-banner" style="cursor:default">
-                        <span class="processing-icon">
-                          <custom-icon icon="download"></custom-icon>
-                        </span>
-                        <div class="processing-meta">
-                          <div class="processing-title">Ready to save</div>
-                          <div class="processing-name">
-                            ${this.#readyFilename || ''}
-                          </div>
-                        </div>
-                        <button
-                          class="share-btn"
-                          style="margin-left:auto;white-space:nowrap"
-                          @click=${this.#saveToFilesystem}
-                        >
-                          Save to disk
-                        </button>
-                      </div>
-                    `
-                  : ''}
-                ${this.isDownloading
-                  ? html`
-                      <div class="processing-banner">
-                        <span class="processing-icon">
-                          <custom-icon icon="download"></custom-icon>
-                        </span>
-                        <div class="processing-meta">
-                          <div class="processing-title">
-                            Downloading
-                            ${this.downloadBytesTotal
-                              ? html` •
-                                ${Math.round(
-                                  (this.downloadBytesDone /
-                                    this.downloadBytesTotal) *
-                                    100
-                                )}%`
-                              : ''}
-                          </div>
-                          <div class="processing-name">
-                            ${this.downloadStage === 'Preparing'
-                              ? html`Downloading hash
-                                  <code
-                                    >${this.downloadHash.slice(0, 16)}…</code
-                                  >
-                                  &bull; Please be patient`
-                              : html`${this.downloadName || ''}
-                                ${this.downloadStage
-                                  ? html` • ${this.downloadStage}`
-                                  : ''}
-                                ${this.downloadChunkTotal
-                                  ? html` • Chunks
-                                    ${this.downloadChunkDone}/${this
-                                      .downloadChunkTotal}`
-                                  : ''}
-                                ${this.downloadRateBytes
-                                  ? html` •
-                                    ${this.formatFileSize(
-                                      this.downloadRateBytes
-                                    )}/s`
-                                  : ''}
-                                ${this.downloadEtaSeconds &&
-                                this.downloadBytesTotal
-                                  ? html` • ETA
-                                    ${this.#formatDuration(
-                                      this.downloadEtaSeconds
-                                    )}`
-                                  : ''}`}
-                          </div>
-                        </div>
-                        <div class="processing-bar">
-                          <span
-                            style="width:${this.downloadBytesTotal
-                              ? Math.round(
-                                  (this.downloadBytesDone /
-                                    this.downloadBytesTotal) *
-                                    100
-                                )
-                              : 0}%"
-                          ></span>
-                        </div>
-                      </div>
-                    `
-                  : ''}
+                ${this.recipientMode
+                  ? this.#renderRecipientStatusBanner()
+                  : html`
+                      ${this.downloadConfirmPending &&
+                      !this.isDownloading &&
+                      !this.downloadReady
+                        ? html`
+                            <div
+                              class="processing-banner"
+                              style="cursor:default"
+                            >
+                              <span class="processing-icon">
+                                <custom-icon icon="download"></custom-icon>
+                              </span>
+                              <div class="processing-meta">
+                                <div class="processing-title">
+                                  Fetching from network…
+                                </div>
+                                <div class="processing-name">
+                                  ${this.downloadConfirmPending.name
+                                    ? this.downloadConfirmPending.name
+                                    : html`Hash
+                                        <code
+                                          >${this.downloadConfirmPending.hash.slice(
+                                            0,
+                                            16
+                                          )}…</code
+                                        >
+                                        Please be patient`}
+                                </div>
+                              </div>
+                            </div>
+                          `
+                        : ''}
+                      ${this.isDownloading
+                        ? html`
+                            <div class="processing-banner">
+                              <span class="processing-icon">
+                                <custom-icon icon="download"></custom-icon>
+                              </span>
+                              <div class="processing-meta">
+                                <div class="processing-title">
+                                  Downloading
+                                  ${this.downloadBytesTotal
+                                    ? html` •
+                                      ${Math.round(
+                                        (this.downloadBytesDone /
+                                          this.downloadBytesTotal) *
+                                          100
+                                      )}%`
+                                    : ''}
+                                </div>
+                                <div class="processing-name">
+                                  ${this.downloadStage === 'Preparing'
+                                    ? html`Downloading hash
+                                        <code
+                                          >${this.downloadHash.slice(
+                                            0,
+                                            16
+                                          )}…</code
+                                        >
+                                        &bull; Please be patient`
+                                    : html`${this.downloadName || ''}
+                                      ${this.downloadStage
+                                        ? html` • ${this.downloadStage}`
+                                        : ''}
+                                      ${this.downloadChunkTotal
+                                        ? html` • Chunks
+                                          ${this.downloadChunkDone}/${this
+                                            .downloadChunkTotal}`
+                                        : ''}
+                                      ${this.downloadRateBytes
+                                        ? html` •
+                                          ${this.formatFileSize(
+                                            this.downloadRateBytes
+                                          )}/s`
+                                        : ''}
+                                      ${this.downloadEtaSeconds &&
+                                      this.downloadBytesTotal
+                                        ? html` • ETA
+                                          ${this.#formatDuration(
+                                            this.downloadEtaSeconds
+                                          )}`
+                                        : ''}`}
+                                </div>
+                              </div>
+                              <div class="processing-bar">
+                                <span
+                                  style="width:${this.downloadBytesTotal
+                                    ? Math.round(
+                                        (this.downloadBytesDone /
+                                          this.downloadBytesTotal) *
+                                          100
+                                      )
+                                    : 0}%"
+                                ></span>
+                              </div>
+                            </div>
+                          `
+                        : this.downloadReady
+                          ? html`
+                              <div
+                                class="processing-banner"
+                                style="cursor:default"
+                              >
+                                <span class="processing-icon">
+                                  <custom-icon icon="download"></custom-icon>
+                                </span>
+                                <div class="processing-meta">
+                                  <div class="processing-title">
+                                    Ready to save
+                                  </div>
+                                  <div class="processing-name">
+                                    ${this.#readyFilename || ''}
+                                  </div>
+                                </div>
+                                <button
+                                  class="share-btn"
+                                  style="margin-left:auto;white-space:nowrap"
+                                  @click=${this.#saveToFilesystem}
+                                >
+                                  Save to disk
+                                </button>
+                              </div>
+                            `
+                          : ''}
+                    `}
                 ${this.isProcessing && this.processingItems.length
                   ? html`
                       <div class="file-progress-list">
@@ -2296,7 +3184,6 @@ export class AppShell extends LiteElement {
                           (file) => file.type === 'folder'
                         ).length
                           ? html`
-                              <h3 class="shared-files-title">Shared Folders</h3>
                               ${this.sharedFiles
                                 .filter((file) => file.type === 'folder')
                                 .map(
@@ -2339,11 +3226,11 @@ export class AppShell extends LiteElement {
                           (file) => file.type !== 'folder'
                         ).length
                           ? html`
-                              <h3 class="shared-files-title">Shared Files</h3>
                               ${this.sharedFiles
                                 .filter((file) => file.type !== 'folder')
-                                .map(
-                                  (file) => html`
+                                .map((file) => {
+                                  const isOwn = file.peerId === this.peerId
+                                  return html`
                                     <div class="shared-file-item">
                                       <div class="shared-file-name">
                                         <custom-icon
@@ -2354,51 +3241,86 @@ export class AppShell extends LiteElement {
                                         ${file.name}
                                       </div>
                                       <div class="shared-file-peer">
-                                        ${file.peerId === this.peerId
+                                        ${isOwn
                                           ? '(You)'
-                                          : file.peerId.slice(0, 8) + '...'}
+                                          : file.peerId
+                                            ? file.peerId.slice(0, 8) + '...'
+                                            : 'remote'}
                                       </div>
+                                      ${isOwn
+                                        ? html`
+                                            <button
+                                              class="shared-remove"
+                                              @click=${() =>
+                                                this.#removeSharedItem(file)}
+                                              title="Remove file"
+                                            >
+                                              <custom-icon
+                                                icon="delete"
+                                              ></custom-icon>
+                                              Remove
+                                            </button>
+                                            <button
+                                              class="share-btn"
+                                              @click=${() =>
+                                                this.#copyFileShareLink(
+                                                  file.hash,
+                                                  file.name
+                                                )}
+                                              title="Copy share link"
+                                            >
+                                              <custom-icon
+                                                icon="share"
+                                              ></custom-icon>
+                                              Share
+                                            </button>
+                                            <button
+                                              class="share-btn"
+                                              @click=${() =>
+                                                this.#toggleQrPanel(
+                                                  `file:${file.hash}|${file.name}`
+                                                )}
+                                              title="Show QR code for this file"
+                                            >
+                                              ${this.qrPanelKey ===
+                                              `file:${file.hash}|${file.name}`
+                                                ? 'Hide QR'
+                                                : 'QR'}
+                                            </button>
+                                          `
+                                        : ''}
                                       <button
-                                        class="shared-remove"
+                                        class="download-btn"
+                                        ?disabled=${this.isDownloading &&
+                                        this.downloadHash === file.hash}
                                         @click=${() =>
-                                          this.#removeSharedItem(file)}
-                                        title="Remove file"
-                                      >
-                                        <custom-icon
-                                          icon="delete"
-                                        ></custom-icon>
-                                        Remove
-                                      </button>
-                                      <button
-                                        class="share-btn"
-                                        @click=${() =>
-                                          this.#copyFileShareLink(
+                                          this.#downloadSharedFile(
                                             file.hash,
                                             file.name
                                           )}
-                                        title="Copy share link"
                                       >
-                                        <custom-icon icon="share"></custom-icon>
-                                        Share
+                                        Download
                                       </button>
-                                      <a
-                                        href="?download=${encodeURIComponent(
-                                          file.hash
-                                        )}&name=${encodeURIComponent(
-                                          file.name
-                                        )}"
-                                        class="download-btn"
-                                        download
-                                        >Download</a
-                                      >
                                     </div>
+                                    ${isOwn &&
+                                    this.qrPanelKey ===
+                                      `file:${file.hash}|${file.name}`
+                                      ? this.#renderQrPanel(
+                                          `file:${file.hash}|${file.name}`,
+                                          this.#fileShareUrl(
+                                            file.hash,
+                                            file.name
+                                          )
+                                        )
+                                      : ''}
                                   `
-                                )}
+                                })}
                             `
                           : ''}
                       `}
                 </div>
               </div>
+              ${this.recipientMode ? '' : this.#renderDiskExplorer()}
             </div>
           </div>
         </div>
@@ -2429,29 +3351,32 @@ export class AppShell extends LiteElement {
         Drop files or folders to share
       </div>
 
-      <div class="fab-dock">
-        <div class="fab-group">
-          <button
-            class="fab-btn secondary"
-            @click=${this.#openFolderPicker}
-            aria-label="Add folder"
-            title="Add folder"
-            data-tooltip="Add folder"
-          >
-            <custom-icon icon="folder" aria-hidden="true"></custom-icon>
-          </button>
-          <button
-            class="fab-btn"
-            @click=${this.#openFilePicker}
-            aria-label="Add files"
-            title="Add files"
-            data-tooltip="Add files"
-          >
-            <custom-icon icon="upload" aria-hidden="true"></custom-icon>
-          </button>
-        </div>
-      </div>
-
+      ${this.recipientMode
+        ? ''
+        : html`
+            <div class="fab-dock">
+              <div class="fab-group">
+                <button
+                  class="fab-btn secondary"
+                  @click=${this.#openFolderPicker}
+                  aria-label="Add folder"
+                  title="Add folder"
+                  data-tooltip="Add folder"
+                >
+                  <custom-icon icon="folder" aria-hidden="true"></custom-icon>
+                </button>
+                <button
+                  class="fab-btn"
+                  @click=${this.#openFilePicker}
+                  aria-label="Add files"
+                  title="Add files"
+                  data-tooltip="Add files"
+                >
+                  <custom-icon icon="upload" aria-hidden="true"></custom-icon>
+                </button>
+              </div>
+            </div>
+          `}
       ${icons}
     `
   }

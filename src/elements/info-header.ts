@@ -247,6 +247,8 @@ export class InfoHeader extends LiteElement {
 
   firstRender(): void {
     pubsub.subscribe('peer:connected', async (peer) => {
+      console.log(peer)
+
       if (!this.peers[peer]) {
         this.peers[peer] = await peernet.getConnection(peer).getNetworkStats()
         this.fetchPeerLocation(peer)
@@ -255,6 +257,8 @@ export class InfoHeader extends LiteElement {
     })
 
     pubsub.subscribe('peer:disconnected', (peer) => {
+      console.log(peer)
+
       if (this.peers[peer]) {
         delete this.peers[peer]
         delete this.peerLocations[peer]
